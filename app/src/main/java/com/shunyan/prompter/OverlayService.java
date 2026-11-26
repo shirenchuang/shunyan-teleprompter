@@ -12,9 +12,10 @@ import android.content.pm.ServiceInfo;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.PixelFormat;
 import android.graphics.Point;
-import android.graphics.drawable.GradientDrawable;
+import android.graphics.Rect;
 import android.graphics.drawable.InsetDrawable;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
@@ -38,9 +39,9 @@ import android.view.MotionEvent;
 import android.view.OrientationEventListener;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
@@ -62,12 +63,17 @@ public final class OverlayService extends Service {
     private static final int NOTIFICATION_ID = 42;
     private static final String CHANNEL = "floating_prompt";
     private static final int AUTO = -1;
-    private static final int DEFAULT_BACKGROUND = 0xffebe1fa;
     private static final int PANEL_RADIUS = 26;
     private static final int MIN_COLUMNS = 4;
     private static final int AUTO_COLUMNS = 33;
     private static final int WIDTH_GRIP_SIZE = 26;
     private static final int SCRIPT_GUTTER = WIDTH_GRIP_SIZE + 1;
+    private static final int READING_MARGIN = 12;
+    private static final int READING_GRIP_HEIGHT = 36;
+    private static final int PROGRESS_HEIGHT = 18;
+    private static final int FOOTER_HEIGHT = 36;
+    private static final int SETTINGS_WIDTH = 302;
+    private static final int SETTINGS_HEIGHT = 306;
 
     private enum ColorTarget {
         BACKGROUND("背景颜色", "backgroundColor"),
@@ -110,21 +116,25 @@ public final class OverlayService extends Service {
     private DraftStore.Draft draft;
     private RotatingOverlay windowRoot;
     private LinearLayout surface;
+    private RotatingOverlay settingsRoot;
+    private WindowManager.LayoutParams settingsParams;
+    private FrameLayout settingsPane;
     private LinearLayout titleBar;
-    private TextView title;
     private FrameLayout content;
-    private LinearLayout draftBar;
     private LinearLayout footer;
     private TextView draftButton;
     private SeekBar positionBar;
+    private SeekBar readingLineSlider;
     private ScrollView scriptScroll;
-    private TextView scriptText;
-    private View scriptMarker;
+    private ScriptTextView scriptText;
+    private View scriptBackground;
+    private TextView readingGrip;
     private View leftWidthGrip;
     private View rightWidthGrip;
     private TextView playButton;
     private TextView settingsButton;
     private TextView status;
+    private TextView playbackNotice;
     private ForegroundColorSpan readStyle;
     private final BackgroundColorSpan seekStyle = new BackgroundColorSpan(0x4da57cf1);
     private int[] offsets;
@@ -134,12 +144,12 @@ public final class OverlayService extends Service {
     private boolean endReached, manualScrolling, inputSilenced, showSeek, windowGestureActive, scriptGestureActive;
     private boolean alignAfterScriptLayout, playbackSettings, scrubbing;
     private boolean bubbleOnLeft;
-    private int cursor, voiceGeneration, font, opacity, speed, delay, anchor, preferredWidth, preferredHeight;
+    private int cursor, voiceGeneration, font, opacity, speed, delay, readingLine, preferredWidth, preferredHeight;
     private int expandedX, expandedY;
-    private int settingsOriginX, settingsOriginY, settingsOriginTurns;
+    private int settingsPromptX, settingsPromptY;
     private int backgroundColor, textColor, readColor;
     private float columns;
-    private int renderedPanelColor;
+    private boolean renderedPlayback;
     private int orientationMode = AUTO;
     private int deviceTurns = AUTO;
     private int windowTurns;
@@ -214,6 +224,10 @@ public final class OverlayService extends Service {
         collapsed = settingsOpen = windowGestureActive = scriptGestureActive = false;
         try {
             createWindow();
+            if (intent.getBooleanExtra("preview", false)) {
+                openSettings();
+                refreshSettings();
+            }
             overlaySession = SystemClock.elapsedRealtimeNanos();
             report(receiver, true, "");
         } catch (RuntimeException e) {
@@ -285,32 +299,31 @@ public final class OverlayService extends Service {
     }
 
     private void readPreferences() {
-        font = prefs.getInt("font", 26);
-        opacity = prefs.getInt("opacity", 91);
+        readAppearance();
         speed = prefs.getInt("speed", 180);
         delay = prefs.getInt("delay", 3);
         loop = prefs.getBoolean("loop", false);
         mirror = prefs.getBoolean("mirror", false);
         pinyin = prefs.getBoolean("pinyin", true);
-        backgroundColor = prefs.getInt("backgroundColor", DEFAULT_BACKGROUND);
-        textColor = prefs.getInt("textColor", panelInk());
-        readColor = prefs.getInt("readColor", 0);
         columns = prefs.getFloat("columnWidth", prefs.getInt("columns", 0));
         orientationMode = clamp(prefs.getInt("orientationMode", AUTO), AUTO, 3);
-        anchor = dp(12);
+        readingLine = clamp(prefs.getInt("readingLine", 0), 0, 100);
+    }
+
+    private void readAppearance() {
+        PromptAppearance appearance = PromptAppearance.load(prefs);
+        font = appearance.font();
+        opacity = appearance.opacity();
+        backgroundColor = appearance.background();
+        textColor = appearance.text();
+        readColor = appearance.read();
     }
 
     private void createWindow() {
         Point size = screen();
-        params = new WindowManager.LayoutParams(
-                Math.min(size.x - dp(20), dp(460)),
-                Math.min(size.y - dp(16), dp(312)),
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                PixelFormat.TRANSLUCENT);
-        params.gravity = Gravity.TOP | Gravity.LEFT;
-        preferredWidth = prefs.getInt("width", params.width);
-        preferredHeight = prefs.getInt("height", params.height);
+        params = overlayParams();
+        preferredWidth = prefs.getInt("width", Math.min(size.x - dp(20), dp(460)));
+        preferredHeight = prefs.getInt("height", Math.min(size.y - dp(16), dp(312)));
         params.width = preferredWidth;
         params.height = preferredHeight;
         params.x = prefs.getInt("x", (size.x - params.width) / 2);
@@ -321,6 +334,10 @@ public final class OverlayService extends Service {
         windowRoot = new RotatingOverlay(ui);
         surface = Ui.column(ui);
         surface.setPadding(0, 0, 0, dp(3));
+        surface.setOnClickListener(view -> {
+            if (playbackActive()) pause();
+        });
+        surface.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         windowRoot.addView(surface);
         windowRoot.setTurns(windowTurns);
         bindExpanded();
@@ -328,33 +345,26 @@ public final class OverlayService extends Service {
         repaintWhenLaidOut();
     }
 
+    private WindowManager.LayoutParams overlayParams() {
+        WindowManager.LayoutParams attributes = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                PixelFormat.TRANSLUCENT);
+        attributes.gravity = Gravity.TOP | Gravity.LEFT;
+        return attributes;
+    }
+
     private void bindExpanded() {
         surface.removeAllViews();
         int inset = dp(5);
         titleBar = Ui.row(ui);
-        titleBar.setPadding(dp(12), dp(2), dp(8), 0);
-        ImageView logo = new ImageView(ui);
-        logo.setImageResource(R.drawable.ic_app);
-        logo.setContentDescription("拖动悬浮窗");
-        logo.setOnTouchListener(new WindowGesture(false, false));
-        titleBar.addView(logo, new LinearLayout.LayoutParams(dp(22), dp(22)));
-        title = Ui.text(ui, "顺言提词", 13, panelInk(), true);
-        title.setGravity(Gravity.CENTER_VERTICAL);
-        title.setPadding(dp(6), 0, dp(4), 0);
-        title.setSingleLine(true);
-        title.setEllipsize(TextUtils.TruncateAt.END);
-        title.setContentDescription("拖动悬浮窗");
-        title.setOnTouchListener(new WindowGesture(false, false));
-        titleBar.addView(title, new LinearLayout.LayoutParams(0, dp(40), 1));
-        compactButton(titleBar, "↻", "手动旋转九十度", () -> selectOrientation((windowTurns + 1) & 3));
-        settingsButton = compactButton(titleBar, "⚙", "悬浮设置", this::toggleSettings);
-        compactButton(titleBar, "−", "收起悬浮窗", this::collapse);
-        compactButton(titleBar, "×", "关闭悬浮窗", this::stopSelf);
-        surface.addView(titleBar);
-
-        draftBar = Ui.row(ui);
-        draftBar.setPadding(dp(12), dp(2), dp(12), dp(3));
-        draftButton = Ui.pillAction(ui, "", panelSelection(), panelInk(), () -> {
+        titleBar.setMotionEventSplittingEnabled(false);
+        titleBar.setPadding(dp(2), 0, dp(2), 0);
+        TextView move = Ui.text(ui, "⠿", 17, panelInk(), true);
+        move.setGravity(Gravity.CENTER);
+        move.setContentDescription("拖动悬浮窗");
+        titleBar.addView(move, new LinearLayout.LayoutParams(dp(33), -1));
+        draftButton = Ui.action(ui, "", Color.TRANSPARENT, panelInk(), () -> {
             openSettings();
             showDraftChooser(false);
         });
@@ -362,13 +372,27 @@ public final class OverlayService extends Service {
         draftButton.setEllipsize(TextUtils.TruncateAt.END);
         draftButton.setTextSize(12);
         draftButton.setGravity(Gravity.CENTER_VERTICAL);
-        draftButton.setPadding(dp(10), 0, dp(8), 0);
-        draftBar.addView(draftButton, new LinearLayout.LayoutParams(0, dp(27), 1));
-        status = Ui.text(ui, "", 11, panelInk(), false);
-        status.setPadding(dp(9), 0, 0, 0);
-        status.setSingleLine(true);
-        draftBar.addView(status, new LinearLayout.LayoutParams(-2, -2));
-        surface.addView(draftBar);
+        draftButton.setPadding(dp(2), 0, dp(4), 0);
+        titleBar.addView(draftButton, new LinearLayout.LayoutParams(0, -1, 1));
+        compactButton(titleBar, "↻", "手动旋转九十度", () -> selectOrientation((windowTurns + 1) & 3));
+        settingsButton = compactButton(titleBar, "⚙", "悬浮设置", this::toggleSettings);
+        compactButton(titleBar, "−", "收起悬浮窗", this::collapse);
+        compactButton(titleBar, "×", "关闭悬浮窗", this::stopSelf);
+        WindowGesture titleDrag = new WindowGesture(false, false);
+        titleBar.setOnTouchListener(titleDrag);
+        for (int i = 0; i < titleBar.getChildCount(); i++) {
+            titleBar.getChildAt(i).setOnTouchListener(titleDrag);
+        }
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-1, dp(36));
+        titleParams.setMargins(inset, dp(3), inset, 0);
+        FrameLayout header = new FrameLayout(ui);
+        header.addView(titleBar, new FrameLayout.LayoutParams(-1, -1));
+        playbackNotice = Ui.text(ui, "", 12, Color.WHITE, true);
+        playbackNotice.setPadding(dp(9), dp(5), dp(9), dp(5));
+        playbackNotice.setBackground(Ui.shape(ui, 0xe6252131, 11, Color.TRANSPARENT));
+        playbackNotice.setVisibility(View.GONE);
+        header.addView(playbackNotice, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        surface.addView(header, titleParams);
         updateTitle();
 
         content = new FrameLayout(ui);
@@ -401,23 +425,28 @@ public final class OverlayService extends Service {
                 }
             }
         });
-        surface.addView(positionBar, new LinearLayout.LayoutParams(-1, dp(19)));
+        surface.addView(positionBar, new LinearLayout.LayoutParams(-1, dp(PROGRESS_HEIGHT)));
 
         footer = Ui.row(ui);
-        footer.setPadding(dp(8), 0, dp(5), 0);
-        footer.addView(new View(ui), new LinearLayout.LayoutParams(0, 1, 1));
+        status = Ui.text(ui, "", 11, panelInk(), false);
+        status.setPadding(dp(8), dp(4), dp(8), dp(4));
+        status.setSingleLine(true);
+        status.setEllipsize(TextUtils.TruncateAt.END);
+        FrameLayout statusSlot = new FrameLayout(ui);
+        statusSlot.addView(status, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_VERTICAL));
+        footer.addView(statusSlot, new LinearLayout.LayoutParams(0, -1, 1));
         compactButton(footer, "⏮", "上一段", () -> skipParagraph(false));
-        playButton = Ui.primaryAction(ui, "▶", this::togglePlay);
-        playButton.setTextSize(17);
+        playButton = Ui.action(ui, "▶ 播放", Color.TRANSPARENT, Color.WHITE, this::togglePlay);
+        playButton.setContentDescription("播放");
+        playButton.setTextSize(12);
         playButton.setPadding(0, 0, 0, 0);
-        LinearLayout.LayoutParams playPlacement = new LinearLayout.LayoutParams(dp(46), dp(40));
-        playPlacement.setMargins(dp(9), 0, dp(9), 0);
+        LinearLayout.LayoutParams playPlacement = new LinearLayout.LayoutParams(dp(68), dp(29));
+        playPlacement.setMargins(dp(3), 0, dp(3), 0);
         footer.addView(playButton, playPlacement);
         compactButton(footer, "⏭", "下一段", () -> skipParagraph(true));
-        footer.addView(new View(ui), new LinearLayout.LayoutParams(0, 1, 1));
-        TextView grip = compactButton(footer, "◢", "拖动调整窗口大小", () -> {});
-        grip.setOnTouchListener(new WindowGesture(true, false));
-        LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(-1, dp(46));
+        TextView resizeButton = compactButton(footer, "◢", "拖动调整窗口大小", () -> {});
+        resizeButton.setOnTouchListener(new WindowGesture(true, false));
+        LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(-1, dp(FOOTER_HEIGHT));
         footerParams.setMargins(inset, 0, inset, 0);
         surface.addView(footer, footerParams);
         applyBackground();
@@ -437,9 +466,9 @@ public final class OverlayService extends Service {
         TextView button = Ui.action(ui, text, Color.TRANSPARENT, panelInk(), action);
         button.setContentDescription(description);
         button.setPadding(dp(7), 0, dp(7), 0);
-        button.setMinWidth(dp(34));
-        button.setMinHeight(dp(38));
-        parent.addView(button, new LinearLayout.LayoutParams(-2, dp(39)));
+        button.setMinWidth(dp(32));
+        button.setMinHeight(dp(36));
+        parent.addView(button, new LinearLayout.LayoutParams(-2, dp(36)));
         return button;
     }
 
@@ -457,20 +486,25 @@ public final class OverlayService extends Service {
         };
         scriptScroll.setVerticalScrollBarEnabled(false);
         scriptScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        scriptText = Ui.text(ui, "", font, textColor, false);
-        scriptText.setLineSpacing(dp(7), 1.05f);
-        scriptText.setPadding(dp(SCRIPT_GUTTER), anchor, dp(SCRIPT_GUTTER), 0);
+        scriptText = new ScriptTextView(ui, draft.body(), font, textColor);
+        scriptText.setPadding(dp(SCRIPT_GUTTER), dp(READING_MARGIN), dp(SCRIPT_GUTTER), 0);
         scriptText.setScaleX(mirror ? -1 : 1);
-        scriptText.setText(new SpannableString(draft.body()), TextView.BufferType.SPANNABLE);
-        readStyle = new ForegroundColorSpan(resolvedReadColor());
+        readStyle = scriptText.colorSpan(resolvedReadColor());
         scriptScroll.addView(scriptText, new ScrollView.LayoutParams(-1, -2));
+        scriptBackground = new View(ui);
+        content.addView(scriptBackground, new FrameLayout.LayoutParams(-1, -1));
         content.addView(scriptScroll, new FrameLayout.LayoutParams(-1, -1));
-        scriptMarker = new View(ui);
-        scriptMarker.setBackground(Ui.shape(ui, textColor, 2, Color.TRANSPARENT));
-        content.addView(scriptMarker, new FrameLayout.LayoutParams(dp(3), dp(19)));
         leftWidthGrip = addWidthGrip(true);
         rightWidthGrip = addWidthGrip(false);
+        readingGrip = Ui.text(ui, "↕", 16, panelAccent(), true);
+        readingGrip.setGravity(Gravity.CENTER);
+        readingGrip.setContentDescription("阅读线，向上或向下拖动");
+        readingGrip.setOnTouchListener(new ReadingLineGesture());
+        content.addView(readingGrip, new FrameLayout.LayoutParams(dp(WIDTH_GRIP_SIZE), dp(READING_GRIP_HEIGHT)));
 
+        scriptScroll.setOnClickListener(view -> {
+            if (playbackActive()) pause();
+        });
         scriptScroll.setOnTouchListener(new ScriptGesture());
         scriptScroll.setOnScrollChangeListener((view, x, y, oldX, oldY) -> {
             Layout layout = scriptText.getLayout();
@@ -492,28 +526,116 @@ public final class OverlayService extends Service {
     }
 
     private void layoutScript(int width, int height) {
+        if (width <= 0 || height <= 0) return;
         int side = ScriptLayout.columnInset(width, dp(SCRIPT_GUTTER), columns, scriptText.getPaint().measureText("字"));
-        int bottom = Math.max(dp(8), height - anchor - scriptText.getLineHeight());
-        if (scriptText.getPaddingLeft() != side || scriptText.getPaddingBottom() != bottom) {
+        int lineHeight = scriptText.getLineHeight();
+        int inset = ScriptLayout.readingInset(readingHeight(height), lineHeight, dp(READING_MARGIN), readingLine);
+        int bottom = Math.max(dp(8), height - inset - lineHeight);
+        if (scriptText.getPaddingLeft() != side || scriptText.getPaddingTop() != inset
+                || scriptText.getPaddingBottom() != bottom) {
             alignAfterScriptLayout = true;
-            scriptText.setPadding(side, anchor, side, bottom);
+            scriptText.setPadding(side, inset, side, bottom);
         }
         int gripMargin = Math.max(0, side - dp(WIDTH_GRIP_SIZE));
-        positionWidthGrip(leftWidthGrip, gripMargin);
-        positionWidthGrip(rightWidthGrip, gripMargin);
-        FrameLayout.LayoutParams marker = (FrameLayout.LayoutParams) scriptMarker.getLayoutParams();
-        marker.gravity = Gravity.TOP | (mirror ? Gravity.RIGHT : Gravity.LEFT);
-        marker.leftMargin = mirror ? 0 : Math.max(dp(4), side - dp(10));
-        marker.rightMargin = mirror ? Math.max(dp(4), side - dp(10)) : 0;
-        marker.topMargin = anchor;
-        scriptMarker.setLayoutParams(marker);
+        setSideMargins(leftWidthGrip, gripMargin);
+        setSideMargins(rightWidthGrip, gripMargin);
+        setSideMargins(scriptBackground, Math.max(0, side - dp(10)));
+        positionReadingGrip(gripMargin, height, inset + lineHeight / 2);
+    }
+
+    private int readingHeight(int height) {
+        // Keep the reading line steady when playback hides the progress bar and footer.
+        return renderedPlayback || settingsOpen ? Math.max(1, height - dp(PROGRESS_HEIGHT) - dp(FOOTER_HEIGHT)) : height;
+    }
+
+    private void positionReadingGrip(int side, int height, int center) {
+        FrameLayout.LayoutParams placement = (FrameLayout.LayoutParams) readingGrip.getLayoutParams();
+        placement.gravity = Gravity.TOP | (mirror ? Gravity.RIGHT : Gravity.LEFT);
+        placement.leftMargin = mirror ? 0 : side;
+        placement.rightMargin = mirror ? side : 0;
+        int top = clamp(center - placement.height / 2, 0, Math.max(0, height - placement.height));
+        placement.topMargin = top;
+        readingGrip.setLayoutParams(placement);
+
+        View neighbor = mirror ? rightWidthGrip : leftWidthGrip;
+        int gripHeight = neighbor.getLayoutParams().height;
+        int middle = (height - gripHeight) / 2;
+        int bottom = top + placement.height;
+        int gripTop = middle;
+        if (middle < bottom && middle + gripHeight > top) {
+            gripTop = height - bottom >= top ? Math.min(bottom, height - gripHeight) : Math.max(0, top - gripHeight);
+        }
+        neighbor.setTranslationY(gripTop - middle);
+        (mirror ? leftWidthGrip : rightWidthGrip).setTranslationY(0);
+    }
+
+    private void setReadingLine(int percent) {
+        if (readingLine == percent) return;
+        readingLine = percent;
+        layoutScript(scriptScroll.getWidth(), scriptScroll.getHeight());
+        if (readingLineSlider != null) readingLineSlider.setProgress(percent);
+    }
+
+    private void saveReadingLine() {
+        prefs.edit().putInt("readingLine", readingLine).apply();
+    }
+
+    private final class ReadingLineGesture implements View.OnTouchListener {
+        private final int slop = ViewConfiguration.get(ui).getScaledTouchSlop();
+        private float startY;
+        private int initialLine, initialInset;
+        private boolean dragging;
+
+        @Override public boolean onTouch(View view, MotionEvent event) {
+            float y = view.getTop() + event.getY();
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    startY = y;
+                    initialLine = readingLine;
+                    initialInset = scriptText.getPaddingTop();
+                    dragging = false;
+                    if (manualScrolling) {
+                        manualScrolling = false;
+                        savePosition();
+                    }
+                    scriptGestureActive = true;
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    move(y);
+                    break;
+                case MotionEvent.ACTION_UP:
+                    move(y);
+                    if (initialLine != readingLine) saveReadingLine();
+                    finish();
+                    break;
+                case MotionEvent.ACTION_CANCEL:
+                    setReadingLine(initialLine);
+                    finish();
+                    break;
+            }
+            return true;
+        }
+
+        private void move(float y) {
+            float delta = y - startY;
+            if (!dragging && Math.abs(delta) <= slop) return;
+            dragging = true;
+            int height = readingHeight(scriptScroll.getHeight());
+            int lineHeight = scriptText.getLineHeight();
+            int margin = dp(READING_MARGIN);
+            if (height - lineHeight <= 2 * margin) return;
+            int percent = ScriptLayout.readingPercent(height, lineHeight, margin, initialInset + delta);
+            setReadingLine(Math.abs(percent - 50) <= 2 ? 50 : percent);
+        }
+
+        private void finish() {
+            scriptGestureActive = false;
+            if (currentTurns() != windowTurns) scheduleOrientationRefresh();
+        }
     }
 
     private View addWidthGrip(boolean left) {
-        TextView grip = Ui.text(ui, "↔", 15, panelAccent(), true);
-        grip.setGravity(Gravity.CENTER);
-        grip.setBackground(new InsetDrawable(Ui.shape(ui, lightPanel() ? 0xdff7f0ff : 0xe044375b, 10, Color.TRANSPARENT),
-                dp(3), dp(7), dp(3), dp(7)));
+        View grip = new View(ui);
         grip.setContentDescription(left ? "左侧稿件宽度把手" : "右侧稿件宽度把手");
         grip.setOnTouchListener(new ColumnWidthGesture(left));
         int gravity = Gravity.CENTER_VERTICAL | (left ? Gravity.LEFT : Gravity.RIGHT);
@@ -521,11 +643,11 @@ public final class OverlayService extends Service {
         return grip;
     }
 
-    private void positionWidthGrip(View grip, int margin) {
-        FrameLayout.LayoutParams bounds = (FrameLayout.LayoutParams) grip.getLayoutParams();
+    private void setSideMargins(View view, int margin) {
+        FrameLayout.LayoutParams bounds = (FrameLayout.LayoutParams) view.getLayoutParams();
         if (bounds.leftMargin == margin && bounds.rightMargin == margin) return;
         bounds.leftMargin = bounds.rightMargin = margin;
-        grip.setLayoutParams(bounds);
+        view.setLayoutParams(bounds);
     }
 
     private final class ColumnWidthGesture implements View.OnTouchListener {
@@ -590,12 +712,13 @@ public final class OverlayService extends Service {
     private final class ScriptGesture implements View.OnTouchListener {
         private final int slop = ViewConfiguration.get(ui).getScaledTouchSlop();
         private float downX, downY;
-        private boolean moved;
+        private boolean moved, playbackTap;
 
         @Override public boolean onTouch(View view, MotionEvent event) {
+            if (settingsOpen) return false;
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    if (playing || countdownUntil != 0) pause();
+                    playbackTap = playbackActive();
                     handler.removeCallbacks(saveAfterScroll);
                     downX = event.getX();
                     downY = event.getY();
@@ -604,11 +727,14 @@ public final class OverlayService extends Service {
                     break;
                 case MotionEvent.ACTION_MOVE:
                     if (Math.abs(event.getX() - downX) > slop || Math.abs(event.getY() - downY) > slop) {
-                        moved = manualScrolling = true;
+                        moved = true;
+                        manualScrolling = !playbackTap;
                     }
                     break;
                 case MotionEvent.ACTION_UP:
-                    if (!moved) {
+                    if (!moved && playbackTap) {
+                        view.performClick();
+                    } else if (!moved) {
                         int hit = findTappedCharacter(event.getX(), event.getY());
                         if (hit >= 0) {
                             seekTo(hit, true);
@@ -621,7 +747,7 @@ public final class OverlayService extends Service {
                     finish();
                     break;
             }
-            return false;
+            return playbackTap;
         }
 
         private void finish() {
@@ -653,35 +779,37 @@ public final class OverlayService extends Service {
         closeSettingsBounds();
         settingsButton.setText("⚙");
         settingsButton.setContentDescription("悬浮设置");
-        positionBar.setVisibility(View.VISIBLE);
-        footer.setVisibility(View.VISIBLE);
-        bindScript();
+        applyBackground();
         repaintWhenLaidOut();
     }
 
     private void openSettings() {
-        settingsOriginX = params.x;
-        settingsOriginY = params.y;
-        settingsOriginTurns = windowTurns;
+        if (settingsOpen) return;
+        settingsPromptX = params.x;
+        settingsPromptY = params.y;
+        RotatingOverlay panel = new RotatingOverlay(ui);
+        settingsPane = new FrameLayout(ui);
+        panel.addView(settingsPane);
+        settingsParams = overlayParams();
         settingsOpen = true;
         playbackSettings = false;
         settingsButton.setText("返回提词");
         settingsButton.setContentDescription("返回提词");
         pause();
-        positionBar.setVisibility(View.GONE);
-        footer.setVisibility(View.GONE);
-        sizeExpandedWindow(false);
-        updateWindow();
+        applyBackground();
+        placeSettingsWindow();
+        panel.setTurns(windowTurns);
+        windows.updateViewLayout(windowRoot, params);
+        windows.addView(panel, settingsParams);
+        settingsRoot = panel;
     }
 
     private void closeSettingsBounds() {
         if (!settingsOpen) return;
         settingsOpen = false;
-        if (windowTurns == settingsOriginTurns) {
-            params.x = settingsOriginX;
-            params.y = settingsOriginY;
-        }
-        sizeExpandedWindow(false);
+        readingLineSlider = null;
+        removeSettingsWindow();
+        restoreSettingsPrompt();
         updateWindow();
     }
 
@@ -690,7 +818,8 @@ public final class OverlayService extends Service {
     }
 
     private void refreshSettings(int scrollY) {
-        content.removeAllViews();
+        readingLineSlider = null;
+        settingsPane.removeAllViews();
         LinearLayout page = Ui.column(ui);
         page.setPadding(dp(9), 0, dp(9), dp(5));
         LinearLayout tabs = Ui.row(ui);
@@ -711,7 +840,7 @@ public final class OverlayService extends Service {
         LinearLayout.LayoutParams donePlacement = new LinearLayout.LayoutParams(-1, dp(33));
         donePlacement.setMargins(dp(43), dp(2), dp(43), 0);
         page.addView(done, donePlacement);
-        content.addView(page, new FrameLayout.LayoutParams(-1, -1));
+        settingsPane.addView(page, new FrameLayout.LayoutParams(-1, -1));
         if (scrollY > 0) scroll.post(() -> scroll.scrollTo(0, scrollY));
     }
 
@@ -729,31 +858,52 @@ public final class OverlayService extends Service {
     }
 
     private void addDisplaySettings(LinearLayout controls, ScrollView scroll) {
+        TextView reset = Ui.pillAction(ui, "恢复黑底白字", panelSelection(), panelInk(), () -> {
+            PromptAppearance.reset(prefs);
+            readAppearance();
+            applyBackground();
+            refreshScriptAppearance();
+            refreshSettings(scroll.getScrollY());
+        });
+        controls.addView(reset, new LinearLayout.LayoutParams(-1, dp(36)));
+        addSlider(controls, "文字字号", PromptAppearance.MIN_FONT, PromptAppearance.MAX_FONT,
+                font, value -> value + " sp", value -> {
+                    font = value;
+                    prefs.edit().putInt("font", value).apply();
+                    refreshScriptAppearance();
+                });
+        addSlider(controls, "背景不透明度", 0, 100, opacity, value -> value + "%", value -> {
+            opacity = value;
+            prefs.edit().putInt("opacity", value).apply();
+            applyScriptBackground();
+        });
+        readingLineSlider = addSlider(controls, "阅读线位置", 0, 100, readingLine, value -> switch (value) {
+            case 0 -> "顶部";
+            case 50 -> "居中";
+            case 100 -> "底部";
+            default -> value + "%";
+        }, value -> {
+            setReadingLine(value);
+            saveReadingLine();
+        });
+        int autoColumns = Math.max(AUTO_COLUMNS, Math.round(columns) + 1);
+        addSlider(controls, "每行字数", MIN_COLUMNS, autoColumns, columns == 0 ? autoColumns : Math.round(columns),
+                value -> value == autoColumns ? "自动" : value + " 字", value -> {
+                    columns = value == autoColumns ? 0 : value;
+                    saveColumns();
+                    layoutScript(scriptScroll.getWidth(), scriptScroll.getHeight());
+                });
         controls.addView(Ui.text(ui, "旋转方向", 12, panelInk(), true));
         addOrientationControls(controls, () -> refreshSettings(scroll.getScrollY()));
         addColorRow(controls, ColorTarget.BACKGROUND, scroll,
-                new int[] {DEFAULT_BACKGROUND, 0xffd9c7f9, 0xffc5f3fa, Ui.NIGHT},
-                new String[] {"紫青渐变", "淡紫", "浅青", "深紫"});
+                new int[] {Color.BLACK, PromptAppearance.LAVENDER_GLASS, 0xffd9c7f9, 0xffc5f3fa, Ui.NIGHT},
+                new String[] {"纯黑", "紫青渐变", "淡紫", "浅青", "深紫"});
         addColorRow(controls, ColorTarget.TEXT, scroll,
                 new int[] {Ui.INK, Color.WHITE, 0xff6a49bb, 0xff124e67},
                 new String[] {"深紫文字", "白色文字", "紫色文字", "深青文字"});
         addColorRow(controls, ColorTarget.READ, scroll,
                 new int[] {0, 0xff9b76f2, 0xff326c83, 0xffb65a43},
                 new String[] {"自动淡化", "紫色已读", "青色已读", "暖橙已读"});
-        int autoColumns = Math.max(AUTO_COLUMNS, Math.round(columns) + 1);
-        addSlider(controls, "每行字数", MIN_COLUMNS, autoColumns, columns == 0 ? autoColumns : Math.round(columns),
-                value -> value == autoColumns ? "自动" : value + " 字", value -> {
-                    columns = value == autoColumns ? 0 : value;
-                    saveColumns();
-                });
-        addSlider(controls, "文字字号", 16, 64, font, value -> value + " sp", value -> {
-            font = value;
-            prefs.edit().putInt("font", value).apply();
-        });
-        addSlider(controls, "播放背景透明度", 15, 100, opacity, value -> value + "%", value -> {
-            opacity = value;
-            prefs.edit().putInt("opacity", value).apply();
-        });
     }
 
     private void addColorRow(LinearLayout controls, ColorTarget target, ScrollView scroll, int[] colors, String[] names) {
@@ -764,7 +914,7 @@ public final class OverlayService extends Service {
         for (int i = 0; i < colors.length; i++) {
             int color = colors[i];
             int fill = color == 0 ? panelSelection() : color;
-            if (target == ColorTarget.BACKGROUND && color == DEFAULT_BACKGROUND) fill = Ui.LAVENDER;
+            if (target == ColorTarget.BACKGROUND && color == PromptAppearance.LAVENDER_GLASS) fill = Ui.LAVENDER;
             int ink = Color.luminance(fill) < .4f ? Color.WHITE : Ui.INK;
             TextView swatch = Ui.pillAction(ui, color == selected ? "✓" : "", fill, ink, () -> {
                 setColor(target, color);
@@ -855,7 +1005,8 @@ public final class OverlayService extends Service {
     }
 
     private void showColorPicker(ColorTarget target) {
-        content.removeAllViews();
+        readingLineSlider = null;
+        settingsPane.removeAllViews();
         ScrollView scroll = new ScrollView(ui);
         LinearLayout picker = Ui.column(ui);
         picker.setPadding(dp(14), dp(8), dp(14), dp(8));
@@ -899,7 +1050,7 @@ public final class OverlayService extends Service {
         int selected = pickerColor(target);
         renderPreview.accept(selected);
         LinearLayout palette = Ui.row(ui);
-        int[] presets = {DEFAULT_BACKGROUND, Color.BLACK, Color.WHITE, 0xffffe192, 0xffa8f3cf, 0xff8ebbf8};
+        int[] presets = {PromptAppearance.LAVENDER_GLASS, Color.BLACK, Color.WHITE, 0xffffe192, 0xffa8f3cf, 0xff8ebbf8};
         String[] names = {"淡紫", "黑色", "白色", "浅黄", "薄荷", "浅蓝"};
         for (int i = 0; i < presets.length; i++) {
             int color = presets[i];
@@ -932,20 +1083,21 @@ public final class OverlayService extends Service {
             });
         }
         scroll.addView(picker);
-        content.addView(scroll);
+        settingsPane.addView(scroll);
     }
 
     private void setColor(ColorTarget target, int color) {
         switch (target) {
             case BACKGROUND -> {
                 backgroundColor = color;
-                if (!prefs.contains("textColor")) textColor = panelInk();
+                if (!prefs.contains("textColor")) textColor = PromptAppearance.defaultText(color);
                 applyBackground();
             }
             case TEXT -> textColor = color;
             case READ -> readColor = color;
         }
         prefs.edit().putInt(target.preference, color).apply();
+        refreshScriptAppearance();
     }
 
     private int pickerColor(ColorTarget target) {
@@ -961,11 +1113,15 @@ public final class OverlayService extends Service {
     }
 
     private void showDraftChooser(boolean fromSettings) {
-        content.removeAllViews();
+        readingLineSlider = null;
+        settingsPane.removeAllViews();
         ScrollView scroll = new ScrollView(ui);
         LinearLayout choices = Ui.column(ui);
         choices.setPadding(dp(14), dp(4), dp(14), dp(10));
         choices.addView(Ui.text(ui, "切换台本", 15, panelAccent(), true));
+        Ui.space(choices, 7);
+        choices.addView(Ui.primaryAction(ui, "＋ 新建台本", this::openNewDraft),
+                new LinearLayout.LayoutParams(-1, dp(42)));
         Ui.space(choices, 7);
         for (DraftStore.Draft choice : store.all()) {
             TextView button = Ui.pillAction(ui, choice.label(), panelShade(), panelInk(), () -> {
@@ -984,7 +1140,17 @@ public final class OverlayService extends Service {
                 panelAccent(), fromSettings ? this::refreshSettings : this::toggleSettings),
                 new LinearLayout.LayoutParams(-1, -2));
         scroll.addView(choices);
-        content.addView(scroll);
+        settingsPane.addView(scroll);
+    }
+
+    private void openNewDraft() {
+        try {
+            startActivity(new Intent(this, MainActivity.class).setAction(MainActivity.NEW_DRAFT)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP));
+            stopSelf();
+        } catch (RuntimeException denied) {
+            Toast.makeText(this, "无法打开编辑器，请回到顺言首页新建台本。", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private SeekBar addSlider(LinearLayout parent, String label, int minimum, int maximum, int value, IntConsumer setter) {
@@ -1239,7 +1405,7 @@ public final class OverlayService extends Service {
     }
 
     private void scrollToOffset(double offset, boolean byLine) {
-        if (scriptText == null || collapsed || settingsOpen) return;
+        if (scriptText == null || collapsed) return;
         Layout layout = scriptText.getLayout();
         if (layout == null) return;
         int line = layout.getLineForOffset((int) offset);
@@ -1280,7 +1446,7 @@ public final class OverlayService extends Service {
     private void repaintWhenLaidOut() {
         ScrollView view = scriptScroll;
         if (view != null) view.post(() -> {
-            if (view != scriptScroll || collapsed || settingsOpen) return;
+            if (view != scriptScroll || collapsed) return;
             paintRead();
             scrollToReadingOffset();
         });
@@ -1300,9 +1466,9 @@ public final class OverlayService extends Service {
 
     private void updateStatus() {
         if (status == null || playButton == null) return;
-        if (renderedPanelColor != panelColor()) applyBackground();
+        if (renderedPlayback != playbackActive()) applyBackground();
         boolean counting = countdownUntil != 0;
-        surface.setKeepScreenOn(playing || counting);
+        surface.setKeepScreenOn(playbackActive());
         String label;
         if (counting) label = "准备 " + Math.max(1, (countdownUntil - SystemClock.uptimeMillis() + 999L) / 1000L);
         else if (loadingSpeech) label = "加载中";
@@ -1312,42 +1478,67 @@ public final class OverlayService extends Service {
         else if (!voice) label = speed + " 字/分";
         else label = "已暂停";
         status.setText(label);
-        playButton.setText(playing || counting ? "Ⅱ" : "▶");
-        playButton.setContentDescription(playing || counting ? "暂停" : "播放");
+        boolean announce = counting || loadingSpeech || inputSilenced;
+        playbackNotice.setText(announce ? label : "");
+        playbackNotice.setVisibility(announce ? View.VISIBLE : View.GONE);
     }
 
     private void applyBackground() {
-        renderedPanelColor = panelColor();
-        boolean glass = backgroundColor == DEFAULT_BACKGROUND && !collapsed;
-        GradientDrawable background = glass ? Ui.glass(ui, Color.alpha(renderedPanelColor), PANEL_RADIUS)
-                : Ui.shape(ui, renderedPanelColor, PANEL_RADIUS, Color.TRANSPARENT);
-        if (glass) background.setStroke(dp(1.5f), (Color.alpha(renderedPanelColor) << 24) | 0xffffff);
-        surface.setBackground(background);
+        renderedPlayback = playbackActive();
+        surface.setBackground(collapsed || renderedPlayback || settingsOpen ? null
+                : PromptAppearance.fill(ui, backgroundColor, 100, PANEL_RADIUS));
         if (collapsed) return;
 
-        GradientDrawable titleBackground = glass ? Ui.glass(ui, 255, 0)
-                : Ui.shape(ui, 0xff000000 | backgroundColor, 0, Color.TRANSPARENT);
-        float radius = dp(PANEL_RADIUS);
-        titleBackground.setCornerRadii(new float[] {radius, radius, radius, radius, 0, 0, 0, 0});
-        titleBar.setBackground(titleBackground);
-        updatePanelRow(titleBar);
-        updatePanelRow(draftBar);
-        updatePanelRow(footer);
-        Ui.setPill(draftButton, panelSelection(), Color.TRANSPARENT);
+        surface.setClickable(renderedPlayback);
+        titleBar.setVisibility(renderedPlayback ? View.INVISIBLE : View.VISIBLE);
+        footer.setVisibility(renderedPlayback || settingsOpen ? View.GONE : View.VISIBLE);
+        positionBar.setVisibility(footer.getVisibility());
+        int controlInk = panelInk();
+        titleBar.setBackground(settingsOpen ? PromptAppearance.fill(ui, backgroundColor, 100, 16)
+                : Ui.shape(ui, panelShade(), 16, Color.TRANSPARENT));
+        for (int i = 0; i < titleBar.getChildCount(); i++) {
+            ((TextView) titleBar.getChildAt(i)).setTextColor(controlInk);
+        }
+        if (settingsOpen) settingsPane.setBackground(PromptAppearance.fill(ui, backgroundColor, 100, 20));
+        status.setTextColor(controlInk);
+        for (int i = 0; i < footer.getChildCount(); i++) {
+            if (footer.getChildAt(i) instanceof TextView label && label != playButton) label.setTextColor(controlInk);
+        }
+        playButton.setTextColor(lightPanel() ? Color.WHITE : Ui.INK);
+        Ui.setPill(playButton, panelAccent(), Color.TRANSPARENT);
         tintSlider(positionBar);
-        if (scriptText != null) {
-            int halo = lightPanel() ? 0xaaffffff : 0xbb000000;
-            scriptText.setShadowLayer(panelOpacity() < 60 ? dp(2) : 0, 0, 0, halo);
+        applyScriptBackground();
+        scriptScroll.setClickable(renderedPlayback);
+        scriptScroll.setContentDescription(renderedPlayback ? "轻点暂停提词" : null);
+        readingGrip.setVisibility(renderedPlayback ? View.INVISIBLE : View.VISIBLE);
+        readingGrip.setTextColor(settingsOpen ? Ui.NIGHT_INK : panelAccent());
+        readingGrip.setShadowLayer(settingsOpen ? dp(2) : 0, 0, 0, Color.BLACK);
+        for (View grip : new View[] {leftWidthGrip, rightWidthGrip}) {
+            grip.setVisibility(renderedPlayback ? View.INVISIBLE : View.VISIBLE);
+            grip.setBackground(new InsetDrawable(Ui.shape(ui, panelAccent(), 3, Color.TRANSPARENT),
+                    dp(11), dp(16), dp(11), dp(16)));
         }
     }
 
-    private int panelOpacity() {
-        return playing || countdownUntil != 0 ? opacity : 100;
+    private void applyScriptBackground() {
+        boolean usePlaybackAppearance = renderedPlayback || settingsOpen;
+        scriptBackground.setBackground(usePlaybackAppearance && opacity > 0
+                ? PromptAppearance.fill(ui, backgroundColor, opacity, 12) : null);
+        scriptText.setOutlined(usePlaybackAppearance && opacity < 100);
     }
 
-    private int panelColor() {
-        if (collapsed) return Color.TRANSPARENT;
-        return (Math.round(panelOpacity() * 255f / 100) << 24) | (backgroundColor & 0x00ffffff);
+    private void refreshScriptAppearance() {
+        scriptText.setScriptSize(font);
+        scriptText.setScriptColor(textColor);
+        if (scriptText.getText() instanceof Spannable text) text.removeSpan(readStyle);
+        readStyle = scriptText.colorSpan(resolvedReadColor());
+        layoutScript(scriptScroll.getWidth(), scriptScroll.getHeight());
+        paintRead();
+        repaintWhenLaidOut();
+    }
+
+    private boolean playbackActive() {
+        return playing || countdownUntil != 0;
     }
 
     private int panelInk() {
@@ -1368,19 +1559,6 @@ public final class OverlayService extends Service {
 
     private int panelSelection() {
         return lightPanel() ? 0x296439b4 : 0x40c4a5ff;
-    }
-
-    private void updatePanelRow(LinearLayout row) {
-        int ink = panelInk();
-        int shadow = lightPanel() ? 0x99ffffff : 0xaa000000;
-        int shadowRadius = row == footer && panelOpacity() < 65 ? dp(1) : 0;
-        for (int i = 0; i < row.getChildCount(); i++) {
-            if (row.getChildAt(i) instanceof TextView label && label != playButton) {
-                label.setTextColor(label == title || label == settingsButton ? panelAccent() : ink);
-                label.setShadowLayer(shadowRadius, 0, 0, shadow);
-                if (row == titleBar && label != title) Ui.setPill(label, panelShade(), Color.TRANSPARENT);
-            }
-        }
     }
 
     private Point screen() {
@@ -1414,6 +1592,7 @@ public final class OverlayService extends Service {
         if (collapsed) {
             snapBubble();
         } else {
+            if (settingsOpen) restoreSettingsPrompt();
             int next = currentTurns();
             boolean axisChanged = RotatingOverlay.swapsAxes(next) != RotatingOverlay.swapsAxes(windowTurns);
             windowTurns = next;
@@ -1421,6 +1600,10 @@ public final class OverlayService extends Service {
             sizeExpandedWindow(axisChanged);
         }
         constrain();
+        if (settingsOpen) {
+            settingsPromptX = params.x;
+            settingsPromptY = params.y;
+        }
         updateWindow();
         repaintWhenLaidOut();
     }
@@ -1429,14 +1612,65 @@ public final class OverlayService extends Service {
         int centerX = params.x + params.width / 2;
         int centerY = params.y + params.height / 2;
         boolean sideways = RotatingOverlay.swapsAxes(windowTurns);
-        int height = settingsOpen ? Math.max(preferredHeight, dp(405)) : preferredHeight;
-        params.width = sideways ? height : preferredWidth;
-        params.height = sideways ? preferredWidth : height;
+        params.width = sideways ? preferredHeight : preferredWidth;
+        params.height = sideways ? preferredWidth : preferredHeight;
         constrain();
         if (keepCenter) {
             params.x = centerX - params.width / 2;
             params.y = centerY - params.height / 2;
         }
+    }
+
+    private void restoreSettingsPrompt() {
+        params.x = settingsPromptX;
+        params.y = settingsPromptY;
+        sizeExpandedWindow(false);
+    }
+
+    private void placeSettingsWindow() {
+        restoreSettingsPrompt();
+        settingsPromptX = params.x;
+        settingsPromptY = params.y;
+        Point area = settingsArea();
+        int promptWidth = Math.min(params.width, area.x);
+        int promptHeight = Math.min(params.height, area.y);
+        int left = clamp(params.x, 0, area.x - promptWidth);
+        int top = clamp(params.y, 0, area.y - promptHeight);
+        boolean sideways = RotatingOverlay.swapsAxes(windowTurns);
+        int width = sideways ? area.y : area.x;
+        int height = sideways ? area.x : area.y;
+        Rect prompt = new Rect(left, top, left + promptWidth, top + promptHeight);
+        Rect localPrompt = SettingsPlacement.toLocal(prompt, area.x, area.y, windowTurns);
+        SettingsPlacement placement = SettingsPlacement.fit(localPrompt, width, height,
+                dp(SETTINGS_WIDTH), dp(SETTINGS_HEIGHT), dp(270), dp(160), dp(6));
+        int inverse = (-windowTurns) & 3;
+        setWindowBounds(params, SettingsPlacement.toLocal(placement.prompt(), width, height, inverse));
+        setWindowBounds(settingsParams, SettingsPlacement.toLocal(placement.settings(), width, height, inverse));
+    }
+
+    private Point settingsArea() {
+        Point screen = screen();
+        Rect area = new Rect(0, 0, screen.x, screen.y);
+        Rect visible;
+        if (Build.VERSION.SDK_INT >= 30) {
+            var metrics = windows.getCurrentWindowMetrics();
+            visible = new Rect(metrics.getBounds());
+            Insets insets = metrics.getWindowInsets().getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            visible.inset(insets.left, insets.top, insets.right, insets.bottom);
+        } else {
+            visible = new Rect();
+            windowRoot.getWindowVisibleDisplayFrame(visible);
+        }
+        area.intersect(visible);
+        // The window manager already applies the parent frame's system bar offsets.
+        return new Point(area.width(), area.height());
+    }
+
+    private void setWindowBounds(WindowManager.LayoutParams attributes, Rect bounds) {
+        attributes.x = bounds.left;
+        attributes.y = bounds.top;
+        attributes.width = bounds.width();
+        attributes.height = bounds.height();
     }
 
     private void snapBubble() {
@@ -1462,7 +1696,13 @@ public final class OverlayService extends Service {
     }
 
     private void updateWindow() {
-        if (windowRoot != null && windowRoot.isAttachedToWindow()) windows.updateViewLayout(windowRoot, params);
+        if (windowRoot == null || !windowRoot.isAttachedToWindow()) return;
+        if (settingsOpen) placeSettingsWindow();
+        windows.updateViewLayout(windowRoot, params);
+        if (settingsRoot != null) {
+            settingsRoot.setTurns(windowTurns);
+            windows.updateViewLayout(settingsRoot, settingsParams);
+        }
     }
 
     private final class WindowGesture implements View.OnTouchListener {
@@ -1481,54 +1721,60 @@ public final class OverlayService extends Service {
         @Override public boolean onTouch(View view, MotionEvent event) {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    x = params.x;
-                    y = params.y;
+                    x = settingsOpen ? settingsPromptX : params.x;
+                    y = settingsOpen ? settingsPromptY : params.y;
                     width = params.width;
                     height = params.height;
                     startX = event.getRawX();
                     startY = event.getRawY();
                     moved = false;
                     windowGestureActive = true;
+                    if (!resize && view.isClickable()) view.setPressed(true);
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     int dx = Math.round(event.getRawX() - startX), dy = Math.round(event.getRawY() - startY);
                     moved = moved || Math.abs(dx) > slop || Math.abs(dy) > slop;
                     if (!moved) return true;
-                    if (resize) {
+                    view.setPressed(false);
+                    if (settingsOpen) {
+                        settingsPromptX = x + dx;
+                        settingsPromptY = y + dy;
+                    } else if (resize) {
                         resizeWindow(dx, dy);
                     } else {
                         params.x = x + dx;
                         params.y = y + dy;
                     }
-                    constrain();
+                    if (!settingsOpen) constrain();
                     updateWindow();
                     return true;
                 case MotionEvent.ACTION_UP:
                     windowGestureActive = false;
-                    if (bubble && !moved) return view.performClick();
+                    view.setPressed(false);
+                    if (!moved) {
+                        if (!resize && view.isClickable()) view.performClick();
+                        return true;
+                    }
                     if (bubble) {
                         Point size = screen();
                         bubbleOnLeft = params.x + params.width / 2 < size.x / 2;
                         snapBubble();
                         constrain();
                         updateWindow();
-                    } else if (moved) {
+                    } else {
                         if (resize) {
                             boolean sideways = RotatingOverlay.swapsAxes(windowTurns);
                             preferredWidth = sideways ? params.height : params.width;
                             preferredHeight = sideways ? params.width : params.height;
                         }
-                        if (settingsOpen) {
-                            settingsOriginX = params.x;
-                            settingsOriginY = params.y;
-                            settingsOriginTurns = windowTurns;
-                        }
-                        prefs.edit().putInt("x", params.x).putInt("y", params.y)
+                        prefs.edit().putInt("x", settingsOpen ? settingsPromptX : params.x)
+                                .putInt("y", settingsOpen ? settingsPromptY : params.y)
                                 .putInt("width", preferredWidth).putInt("height", preferredHeight).apply();
                     }
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     windowGestureActive = false;
+                    view.setPressed(false);
                     if (resize && moved) refreshWindowOrientation();
                     return true;
                 default:
@@ -1555,27 +1801,36 @@ public final class OverlayService extends Service {
     }
 
     private void removeWindow() {
+        removeSettingsWindow();
         if (windowRoot != null && windowRoot.isAttachedToWindow()) windows.removeViewImmediate(windowRoot);
         windowRoot = null;
         surface = null;
         clearScriptViews();
     }
 
+    private void removeSettingsWindow() {
+        if (settingsRoot != null) windows.removeViewImmediate(settingsRoot);
+        settingsRoot = null;
+        settingsParams = null;
+        settingsPane = null;
+    }
+
     private void clearScriptViews() {
         titleBar = null;
-        title = null;
         footer = null;
-        draftBar = null;
         draftButton = null;
         positionBar = null;
+        readingLineSlider = null;
         scrubbing = false;
         scriptScroll = null;
         scriptText = null;
-        scriptMarker = null;
+        scriptBackground = null;
+        readingGrip = null;
         leftWidthGrip = rightWidthGrip = null;
         playButton = null;
         settingsButton = null;
         status = null;
+        playbackNotice = null;
         readStyle = null;
     }
 

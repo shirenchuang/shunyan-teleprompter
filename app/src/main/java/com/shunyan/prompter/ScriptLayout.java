@@ -3,6 +3,19 @@ package com.shunyan.prompter;
 import android.text.Layout;
 
 final class ScriptLayout {
+    static int readingInset(int height, int lineHeight, int margin, int percent) {
+        int travel = Math.max(0, height - lineHeight);
+        int start = Math.min(margin, travel / 2);
+        return start + Math.round((travel - 2 * start) * percent / 100f);
+    }
+
+    static int readingPercent(int height, int lineHeight, int margin, float inset) {
+        int start = readingInset(height, lineHeight, margin, 0);
+        int end = readingInset(height, lineHeight, margin, 100);
+        if (end == start) return 0;
+        return Math.max(0, Math.min(100, Math.round((inset - start) * 100 / (end - start))));
+    }
+
     static int columnInset(int viewWidth, int minimumInset, float columns, float fullWidthAdvance) {
         int safeInset = Math.min(minimumInset, Math.max(0, (viewWidth - 1) / 2));
         if (columns == 0) return safeInset;

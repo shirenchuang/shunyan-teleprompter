@@ -34,6 +34,7 @@ import android.widget.Toast;
 import java.util.List;
 
 public final class MainActivity extends Activity {
+    static final String NEW_DRAFT = "com.shunyan.prompter.NEW_DRAFT";
     private static final int MICROPHONE = 30;
     private static final int NOTIFICATIONS = 31;
 
@@ -42,6 +43,7 @@ public final class MainActivity extends Activity {
     private LinearLayout root;
     private String selectedId;
     private String pendingId;
+    private boolean pendingPreview;
     private boolean voice;
     private boolean waitingForOverlay;
     private boolean launching;
@@ -59,6 +61,7 @@ public final class MainActivity extends Activity {
         voice = preferences.getBoolean("voice", false);
         if (state != null) {
             pendingId = state.getString("pending");
+            pendingPreview = state.getBoolean("preview");
             waitingForOverlay = state.getBoolean("waiting");
             String editingId = state.getString("editing");
             if (editingId != null) {
@@ -68,12 +71,28 @@ public final class MainActivity extends Activity {
                 return;
             }
         }
-        showHome();
+        if (consumeNewDraft(getIntent())) newDraft();
+        else showHome();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (!consumeNewDraft(intent)) return;
+        if (editing == null) newDraft();
+        else leaveEditor(this::newDraft);
+    }
+
+    private static boolean consumeNewDraft(Intent intent) {
+        if (!NEW_DRAFT.equals(intent.getAction())) return false;
+        intent.setAction(null);
+        return true;
     }
 
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
         state.putString("pending", pendingId);
+        state.putBoolean("preview", pendingPreview);
         state.putBoolean("waiting", waitingForOverlay);
         if (editing != null) {
             state.putString("editing", editing.id());
@@ -131,6 +150,7 @@ public final class MainActivity extends Activity {
         if (selected == null && !drafts.isEmpty()) selected = drafts.get(0);
         if (selected != null) selectedId = selected.id();
 
+        addHomeNavigation();
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setVerticalScrollBarEnabled(false);
@@ -161,28 +181,24 @@ public final class MainActivity extends Activity {
             Ui.space(content, 9);
             for (DraftStore.Draft draft : drafts) addDraftRow(content, draft);
         }
-
-        TextView create = Ui.primaryAction(this, "＋", () -> showEditor(store.blank(), null, null));
-        create.setTextSize(29);
-        create.setPadding(0, 0, 0, 0);
-        create.setContentDescription("新建台本");
-        LinearLayout.LayoutParams button = new LinearLayout.LayoutParams(dp(52), dp(52));
-        button.gravity = Gravity.CENTER_HORIZONTAL;
-        button.bottomMargin = dp(9);
-        root.addView(create, button);
     }
 
-    private void addHomeHeader(LinearLayout content) {
+    private void addHomeNavigation() {
         LinearLayout header = Ui.row(this);
+        header.setPadding(dp(19), dp(10), dp(19), dp(3));
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.ic_app);
         logo.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         header.addView(logo, new LinearLayout.LayoutParams(dp(37), dp(37)));
         TextView name = Ui.text(this, "顺言", 19, Ui.INK, true);
         name.setPadding(dp(7), 0, 0, 0);
-        header.addView(name);
-        content.addView(header);
-        Ui.space(content, 11);
+        header.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView create = Ui.primaryAction(this, "＋ 新建台本", this::newDraft);
+        header.addView(create, new LinearLayout.LayoutParams(-2, dp(46)));
+        root.addView(header, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private void addHomeHeader(LinearLayout content) {
         content.addView(Ui.text(this, "从容表达", 38, Ui.INK, true));
         Ui.space(content, 4);
         content.addView(Ui.text(this, "专业提词助手，拍摄演讲更自信", 14, Ui.MUTED, false));
@@ -231,9 +247,15 @@ public final class MainActivity extends Activity {
         card.addView(modes, new LinearLayout.LayoutParams(-1, -2));
         Ui.space(card, 10);
 
-        TextView begin = Ui.primaryAction(this, "▶  开始提词", () -> beginLaunch(draft));
+        LinearLayout actions = Ui.row(this);
+        TextView preview = Ui.pillAction(this, "预览", Ui.LAVENDER, Ui.ACCENT, () -> beginLaunch(draft, true));
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(dp(72), dp(49));
+        previewParams.rightMargin = dp(8);
+        actions.addView(preview, previewParams);
+        TextView begin = Ui.primaryAction(this, "▶  开始提词", () -> beginLaunch(draft, false));
         begin.setTextSize(17);
-        card.addView(begin, new LinearLayout.LayoutParams(-1, dp(49)));
+        actions.addView(begin, new LinearLayout.LayoutParams(0, dp(49), 1));
+        card.addView(actions, new LinearLayout.LayoutParams(-1, -2));
         content.addView(card, new LinearLayout.LayoutParams(-1, -2));
     }
 
@@ -336,6 +358,10 @@ public final class MainActivity extends Activity {
         content.addView(row, placement);
     }
 
+    private void newDraft() {
+        showEditor(store.blank(), null, null);
+    }
+
     private void showEditor(DraftStore.Draft draft, String title, String body) {
         editing = draft;
         createPage();
@@ -355,21 +381,30 @@ public final class MainActivity extends Activity {
         page.addView(toolbar);
         Ui.space(page, 14);
 
+        ScrollView editorScroll = new ScrollView(this);
+        editorScroll.setFillViewport(true);
+        page.addView(editorScroll, new LinearLayout.LayoutParams(-1, 0, 1));
         LinearLayout sheet = Ui.column(this);
         sheet.setPadding(dp(15), dp(8), dp(15), dp(9));
         sheet.setBackground(Ui.shape(this, saved ? 0xdffbfbff : 0x70faf9ff, 24, Ui.WHITE_EDGE));
-        titleField = editorField(title == null ? draft.title() : title, "输入台本标题", 21);
+        titleField = editorField(title == null ? draft.title() : title, "标题（选填）", 21);
         titleField.setSingleLine();
         titleField.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
         sheet.addView(titleField, new LinearLayout.LayoutParams(-1, dp(48)));
         View divider = new View(this);
         divider.setBackgroundColor(0xffd7cbed);
         sheet.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
-        bodyField = editorField(body == null ? draft.body() : body, "在这里输入或粘贴你的台本内容…", 16);
+        LinearLayout bodyTools = Ui.row(this);
+        bodyTools.addView(Ui.text(this, "正文", 13, Ui.MUTED, true), new LinearLayout.LayoutParams(0, -2, 1));
+        bodyTools.addView(Ui.pillAction(this, "粘贴正文", Ui.LAVENDER, Ui.ACCENT, this::pasteScript));
+        bodyTools.addView(Ui.pillAction(this, "复制", Color.TRANSPARENT, Ui.ACCENT, this::copyScript));
+        sheet.addView(bodyTools, new LinearLayout.LayoutParams(-1, -2));
+        bodyField = editorField(body == null ? draft.body() : body, "输入或粘贴台本文字", 16);
         bodyField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
         bodyField.setGravity(Gravity.TOP | Gravity.START);
         bodyField.setLineSpacing(dp(5), 1);
+        bodyField.setMinHeight(dp(144));
         sheet.addView(bodyField, new LinearLayout.LayoutParams(-1, 0, 1));
         TextView stats = Ui.text(this, scriptStats(bodyField.getText()), 12, Ui.MUTED, false);
         stats.setGravity(Gravity.CENTER);
@@ -383,26 +418,19 @@ public final class MainActivity extends Activity {
             }
             @Override public void afterTextChanged(Editable s) {}
         });
-        page.addView(sheet, new LinearLayout.LayoutParams(-1, 0, 1));
+        editorScroll.addView(sheet, new ScrollView.LayoutParams(-1, -2));
 
-        Ui.space(page, 8);
-        LinearLayout actions = Ui.row(this);
-        actions.setBackground(Ui.shape(this, Ui.CARD, 22, Ui.WHITE_EDGE));
-        actions.addView(Ui.pillAction(this, "粘贴", Color.TRANSPARENT, Ui.ACCENT, this::pasteScript),
-                new LinearLayout.LayoutParams(0, dp(46), 1));
-        actions.addView(Ui.pillAction(this, "复制", Color.TRANSPARENT, Ui.ACCENT, this::copyScript),
-                new LinearLayout.LayoutParams(0, dp(46), 1));
         if (saved) {
-            actions.addView(Ui.pillAction(this, "删除台本", Color.TRANSPARENT, 0xffa12d45,
+            Ui.space(page, 8);
+            page.addView(Ui.pillAction(this, "删除台本", Ui.CARD, 0xffa12d45,
                     () -> new AlertDialog.Builder(this).setTitle("删除这个台本？")
                         .setMessage(draft.label()).setNegativeButton("取消", null)
                         .setPositiveButton("删除", (dialog, which) -> {
                             store.delete(draft.id());
                             hideKeyboard();
                             showHome();
-                        }).show()), new LinearLayout.LayoutParams(0, dp(46), 1));
+                        }).show()), new LinearLayout.LayoutParams(-1, dp(46)));
         }
-        page.addView(actions, new LinearLayout.LayoutParams(-1, -2));
         root.requestFocus();
     }
 
@@ -446,8 +474,13 @@ public final class MainActivity extends Activity {
     }
 
     private void saveEditor() {
+        saveEditor(this::showHome);
+    }
+
+    private void saveEditor(Runnable next) {
         String body = bodyField.getText().toString();
         if (body.trim().isEmpty()) {
+            bodyField.requestFocus();
             bodyField.setError("请先填写稿件");
             return;
         }
@@ -455,18 +488,22 @@ public final class MainActivity extends Activity {
         store.put(new DraftStore.Draft(selectedId, titleField.getText().toString().trim(), body));
         preferences.edit().putString("selected", selectedId).apply();
         hideKeyboard();
-        showHome();
+        next.run();
     }
 
     private void leaveEditor() {
+        leaveEditor(this::showHome);
+    }
+
+    private void leaveEditor(Runnable next) {
         if (!editing.title().equals(titleField.getText().toString()) || !editing.body().equals(bodyField.getText().toString())) {
             new AlertDialog.Builder(this).setTitle("保存台本修改？")
                     .setNeutralButton("继续编辑", null)
-                    .setNegativeButton("放弃修改", (dialog, which) -> { hideKeyboard(); showHome(); })
-                    .setPositiveButton("保存", (dialog, which) -> saveEditor()).show();
+                    .setNegativeButton("放弃修改", (dialog, which) -> { hideKeyboard(); next.run(); })
+                    .setPositiveButton("保存", (dialog, which) -> saveEditor(next)).show();
         } else {
             hideKeyboard();
-            showHome();
+            next.run();
         }
     }
 
@@ -475,9 +512,10 @@ public final class MainActivity extends Activity {
         else super.onBackPressed();
     }
 
-    private void beginLaunch(DraftStore.Draft draft) {
+    private void beginLaunch(DraftStore.Draft draft, boolean preview) {
         if (launching) return;
         pendingId = draft.id();
+        pendingPreview = preview;
         if (!Settings.canDrawOverlays(this)) {
             new AlertDialog.Builder(this).setTitle("允许显示悬浮窗")
                     .setMessage("在系统设置中找到顺言提词器并启用权限。返回后会打开台本。")
@@ -526,7 +564,9 @@ public final class MainActivity extends Activity {
     private void launchOverlay() {
         if (pendingId == null || launching || isFinishing()) return;
         String id = pendingId;
+        boolean preview = pendingPreview;
         pendingId = null;
+        pendingPreview = false;
         launching = true;
         int attempt = ++launchAttempt;
         Handler handler = new Handler(Looper.getMainLooper());
@@ -534,13 +574,13 @@ public final class MainActivity extends Activity {
             @Override protected void onReceiveResult(int result, Bundle data) {
                 if (attempt != launchAttempt || isDestroyed()) return;
                 launching = false;
-                if (result == 1) moveTaskToBack(true);
-                else toast(data.getString("message", "悬浮窗未能开启，请重试。"));
+                if (result != 1) toast(data.getString("message", "悬浮窗未能开启，请重试。"));
+                else if (!preview) moveTaskToBack(true);
             }
         };
         Intent intent = new Intent(this, OverlayService.class)
                 .setAction(OverlayService.OPEN).putExtra("draft", id)
-                .putExtra("voice", voice).putExtra("receiver", receiver);
+                .putExtra("voice", voice).putExtra("preview", preview).putExtra("receiver", receiver);
         try {
             startForegroundService(intent);
             handler.postDelayed(() -> {

@@ -2,6 +2,7 @@ package com.shunyan.prompter;
 
 import android.app.Activity;
 import android.app.Instrumentation;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.text.StaticLayout;
 import android.text.TextPaint;
@@ -29,7 +30,8 @@ public final class ReplayInstrumentation extends Instrumentation {
             require(pinyin.match("悬浮提瓷", true) == 4, "Homophone mode missed the corresponding character");
             require(pinyin.match("悬浮提瓷", true) < 0, "Repeated partial incorrectly advanced the cursor");
             verifyReadingLayout();
-            result.putString("layout", "homophone matching, character hit, column width and rotation passed");
+            verifySettingsPlacement();
+            result.putString("layout", "homophone matching, character hit, column width, reading line, settings placement and rotation passed");
             String[] assets = getContext().getAssets().list("");
             String replay = Arrays.asList(assets).contains("replay.wav")
                     ? verifyReplay() : "skipped: optional replay.wav not supplied";
@@ -91,10 +93,35 @@ public final class ReplayInstrumentation extends Instrumentation {
         float y = layout.getLineTop(1) + 10;
         require(ScriptLayout.characterAt(layout, text, x, y) == target, "Tap on a wrapped glyph missed");
         require(ScriptLayout.characterAt(layout, text, -1, y) == -1, "Outside tap moved the cursor");
+        require(ScriptLayout.readingInset(300, 40, 12, 0) == 12, "Top reading line changed");
+        require(ScriptLayout.readingInset(300, 40, 12, 50) + 20 == 150, "Center reading line is off center");
+        require(ScriptLayout.readingInset(300, 40, 12, 100) + 40 == 288, "Bottom reading line clips the text");
+        int movedInset = ScriptLayout.readingInset(300, 40, 12, 73);
+        require(ScriptLayout.readingPercent(300, 40, 12, movedInset) == 73, "Dragging changed the reading percentage");
+        require(ScriptLayout.readingInset(30, 40, 12, 100) == 0, "A short viewport misplaced the reading line");
         require(RotatingOverlay.autoRotation(1, 3) == 0, "Already rotated display was double-rotated");
         require(RotatingOverlay.autoRotation(1, 0) == 3, "Locked portrait orientation was not compensated");
         require(RotatingOverlay.stableSensorTurns(49, 0) == 0, "Sensor jitter crossed the rotation boundary");
         require(RotatingOverlay.stableSensorTurns(70, 0) == 1, "Landscape direction was not recognized");
+    }
+
+    private static void verifySettingsPlacement() {
+        for (int x = 0; x <= 340; x += 10) {
+            Rect prompt = new Rect(x, 24, x + 460, 336);
+            SettingsPlacement placement = SettingsPlacement.fit(prompt, 800, 380, 302, 306, 270, 160, 6);
+            require(placement.prompt().left == x && placement.prompt().width() == prompt.width(),
+                    "Settings constrained horizontal movement");
+            require(!Rect.intersects(placement.prompt(), placement.settings()), "Settings covered the manuscript");
+            require(new Rect(0, 0, 800, 380).contains(placement.settings()), "Settings exceeded the screen bounds");
+            require(placement.settings().height() >= 160, "Settings are too short to use");
+            if (x == 0 || x == 340) require(placement.prompt().equals(prompt), "Docking changed a window that already fits");
+        }
+        Rect portrait = new Rect(18, 24, 388, 336);
+        SettingsPlacement placement = SettingsPlacement.fit(portrait, 410, 780, 302, 306, 270, 160, 6);
+        require(placement.prompt().equals(portrait) && placement.settings().top > portrait.bottom,
+                "Settings did not fit below the portrait manuscript");
+        Rect rotated = SettingsPlacement.toLocal(portrait, 410, 780, 1);
+        require(SettingsPlacement.toLocal(rotated, 780, 410, 3).equals(portrait), "Rotated docking lost the manuscript bounds");
     }
 
     private ByteBuffer loadSample() throws Exception {
