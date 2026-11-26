@@ -1,0 +1,12 @@
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+*.jks
+*.keystore
+*.apk
+
+/artifacts/
+/app/src/androidTest/assets/replay.wav
