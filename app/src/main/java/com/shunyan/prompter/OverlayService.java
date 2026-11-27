@@ -75,6 +75,13 @@ public final class OverlayService extends Service {
     private static final int SETTINGS_WIDTH = 302;
     private static final int SETTINGS_HEIGHT = 306;
     private static final int SETTINGS_TOUCH_HEIGHT = 48;
+    private static final int SETTINGS_SURFACE = 0xff20212b;
+    private static final int SETTINGS_INK = 0xfff4f2fb;
+    private static final int SETTINGS_MUTED = 0xffb7b6c8;
+    private static final int SETTINGS_ACCENT = 0xffd7ccff;
+    private static final int SETTINGS_CONTROL = 0xff2a2b37;
+    private static final int SETTINGS_SELECTED = 0xff3c3453;
+    private static final int SETTINGS_EDGE = 0xff3b3c49;
 
     private enum ColorTarget {
         BACKGROUND("背景颜色", "backgroundColor"),
@@ -794,7 +801,7 @@ public final class OverlayService extends Service {
         settingsParams = overlayParams();
         settingsOpen = true;
         playbackSettings = false;
-        settingsButton.setText("返回提词");
+        settingsButton.setText("↩");
         settingsButton.setContentDescription("返回提词");
         pause();
         applyBackground();
@@ -822,12 +829,19 @@ public final class OverlayService extends Service {
         readingLineSlider = null;
         settingsPane.removeAllViews();
         LinearLayout page = Ui.column(ui);
-        page.setPadding(dp(10), dp(6), dp(10), dp(6));
+        page.setPadding(dp(8), dp(7), dp(8), dp(6));
+        LinearLayout header = Ui.row(ui);
         LinearLayout tabs = Ui.row(ui);
-        tabs.setBackground(Ui.shape(ui, panelShade(), 20, Color.TRANSPARENT));
+        tabs.setBackground(Ui.shape(ui, SETTINGS_CONTROL, 16, Color.TRANSPARENT));
         addSettingsTab(tabs, "显示设置", false);
         addSettingsTab(tabs, "播放跟读", true);
-        page.addView(tabs, new LinearLayout.LayoutParams(-1, -2));
+        header.addView(tabs, new LinearLayout.LayoutParams(0, dp(SETTINGS_TOUCH_HEIGHT), 1));
+        TextView done = Ui.pillAction(ui, "完成", Color.TRANSPARENT, SETTINGS_ACCENT, this::toggleSettings);
+        done.setPadding(0, 0, 0, 0);
+        LinearLayout.LayoutParams donePlacement = new LinearLayout.LayoutParams(dp(60), dp(SETTINGS_TOUCH_HEIGHT));
+        donePlacement.leftMargin = dp(4);
+        header.addView(done, donePlacement);
+        page.addView(header);
 
         ScrollView scroll = new ScrollView(ui);
         LinearLayout controls = Ui.column(ui);
@@ -837,10 +851,6 @@ public final class OverlayService extends Service {
         scroll.addView(controls);
         page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        TextView done = Ui.primaryAction(ui, "完成", this::toggleSettings);
-        LinearLayout.LayoutParams donePlacement = new LinearLayout.LayoutParams(-1, dp(SETTINGS_TOUCH_HEIGHT));
-        donePlacement.topMargin = dp(4);
-        page.addView(done, donePlacement);
         settingsPane.addView(page, new FrameLayout.LayoutParams(-1, -1));
         if (scrollY > 0) scroll.post(() -> scroll.scrollTo(0, scrollY));
     }
@@ -852,8 +862,9 @@ public final class OverlayService extends Service {
             playbackSettings = playback;
             refreshSettings();
         };
-        TextView tab = selected ? Ui.primaryAction(ui, label, select)
-                : Ui.pillAction(ui, label, Color.TRANSPARENT, panelInk(), select);
+        TextView tab = Ui.pillAction(ui, label, selected ? SETTINGS_SELECTED : Color.TRANSPARENT,
+                selected ? SETTINGS_INK : SETTINGS_MUTED, select);
+        tab.setPadding(dp(4), 0, dp(4), 0);
         tab.setSelected(selected);
         tabs.addView(tab, new LinearLayout.LayoutParams(0, dp(SETTINGS_TOUCH_HEIGHT), 1));
     }
@@ -898,7 +909,7 @@ public final class OverlayService extends Service {
                 new int[] {0, 0xff9b76f2, 0xff326c83, 0xffb65a43},
                 new String[] {"自动淡化", "紫色已读", "青色已读", "暖橙已读"});
         Ui.space(controls, 8);
-        TextView reset = Ui.pillAction(ui, "恢复黑底白字", panelSelection(), panelInk(), () -> {
+        TextView reset = Ui.pillAction(ui, "恢复黑底白字", panelShade(), panelAccent(), () -> {
             PromptAppearance.reset(prefs);
             readAppearance();
             applyBackground();
@@ -1496,12 +1507,12 @@ public final class OverlayService extends Service {
         footer.setVisibility(renderedPlayback || settingsOpen ? View.GONE : View.VISIBLE);
         positionBar.setVisibility(footer.getVisibility());
         int controlInk = panelInk();
-        titleBar.setBackground(settingsOpen ? PromptAppearance.fill(ui, backgroundColor, 100, 16)
+        titleBar.setBackground(settingsOpen ? Ui.shape(ui, SETTINGS_SURFACE, 16, SETTINGS_EDGE)
                 : Ui.shape(ui, panelShade(), 16, Color.TRANSPARENT));
         for (int i = 0; i < titleBar.getChildCount(); i++) {
             ((TextView) titleBar.getChildAt(i)).setTextColor(controlInk);
         }
-        if (settingsOpen) settingsPane.setBackground(PromptAppearance.fill(ui, backgroundColor, 100, 20));
+        if (settingsOpen) settingsPane.setBackground(Ui.shape(ui, SETTINGS_SURFACE, 20, SETTINGS_EDGE));
         status.setTextColor(controlInk);
         for (int i = 0; i < footer.getChildCount(); i++) {
             if (footer.getChildAt(i) instanceof TextView label && label != playButton) label.setTextColor(controlInk);
@@ -1544,10 +1555,12 @@ public final class OverlayService extends Service {
     }
 
     private int panelInk() {
+        if (settingsOpen) return SETTINGS_INK;
         return lightPanel() ? Ui.INK : Ui.NIGHT_INK;
     }
 
     private int panelAccent() {
+        if (settingsOpen) return SETTINGS_ACCENT;
         return lightPanel() ? Ui.ACCENT : Ui.ICE;
     }
 
@@ -1556,10 +1569,12 @@ public final class OverlayService extends Service {
     }
 
     private int panelShade() {
+        if (settingsOpen) return SETTINGS_CONTROL;
         return lightPanel() ? 0x166439b4 : 0x16a9d5ff;
     }
 
     private int panelSelection() {
+        if (settingsOpen) return SETTINGS_SELECTED;
         return lightPanel() ? 0x296439b4 : 0x40c4a5ff;
     }
 
@@ -1644,9 +1659,9 @@ public final class OverlayService extends Service {
         Rect prompt = new Rect(left, top, left + promptWidth, top + promptHeight);
         Rect localPrompt = SettingsPlacement.toLocal(prompt, area.x, area.y, windowTurns);
         SettingsPlacement placement = height > width && width < dp(540)
-                ? SettingsPlacement.portrait(localPrompt, width, height, dp(360), dp(152), dp(8))
+                ? SettingsPlacement.portrait(localPrompt, width, height, dp(320), dp(386), dp(152), dp(10))
                 : SettingsPlacement.fit(localPrompt, width, height,
-                        dp(SETTINGS_WIDTH), dp(SETTINGS_HEIGHT), dp(270), dp(160), dp(6));
+                        dp(SETTINGS_WIDTH), dp(SETTINGS_HEIGHT), dp(270), dp(208), dp(122), dp(6));
         int inverse = (-windowTurns) & 3;
         setWindowBounds(params, SettingsPlacement.toLocal(placement.prompt(), width, height, inverse));
         setWindowBounds(settingsParams, SettingsPlacement.toLocal(placement.settings(), width, height, inverse));

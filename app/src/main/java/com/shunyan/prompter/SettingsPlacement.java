@@ -4,10 +4,10 @@ import android.graphics.Rect;
 
 record SettingsPlacement(Rect prompt, Rect settings) {
     static SettingsPlacement portrait(Rect prompt, int width, int height, int minimumPanelHeight,
-                                      int minimumPreviewHeight, int margin) {
+                                      int maximumPanelHeight, int minimumPreviewHeight, int margin) {
         int panelBottom = height - margin;
         int previewReserve = Math.min(minimumPreviewHeight, (panelBottom - margin) / 2);
-        int desiredHeight = Math.max(minimumPanelHeight, Math.round(panelBottom * .57f));
+        int desiredHeight = Math.max(minimumPanelHeight, Math.min(maximumPanelHeight, Math.round(panelBottom * .46f)));
         int panelHeight = Math.min(desiredHeight, panelBottom - previewReserve - margin);
         int panelTop = panelBottom - panelHeight;
 
@@ -19,7 +19,7 @@ record SettingsPlacement(Rect prompt, Rect settings) {
     }
 
     static SettingsPlacement fit(Rect prompt, int width, int height, int preferredWidth, int preferredHeight,
-                                 int minimumSideWidth, int minimumHeight, int gap) {
+                                 int minimumSideWidth, int minimumHeight, int minimumPreviewHeight, int gap) {
         int panelWidth = Math.min(preferredWidth, width);
         int panelHeight = Math.min(preferredHeight, height);
         int right = width - prompt.right - gap;
@@ -27,12 +27,12 @@ record SettingsPlacement(Rect prompt, Rect settings) {
         int panelTop = Math.min(prompt.top, height - panelHeight);
         if (right >= minimumSideWidth && (right >= panelWidth || right >= left)) {
             int panelLeft = prompt.right + gap;
-            return new SettingsPlacement(prompt, new Rect(panelLeft, panelTop,
+            return alongside(prompt, new Rect(panelLeft, panelTop,
                     panelLeft + Math.min(panelWidth, right), panelTop + panelHeight));
         }
         if (left >= minimumSideWidth) {
             int panelRight = prompt.left - gap;
-            return new SettingsPlacement(prompt, new Rect(panelRight - Math.min(panelWidth, left), panelTop,
+            return alongside(prompt, new Rect(panelRight - Math.min(panelWidth, left), panelTop,
                     panelRight, panelTop + panelHeight));
         }
 
@@ -41,13 +41,15 @@ record SettingsPlacement(Rect prompt, Rect settings) {
         boolean dockBelow = below >= above;
         if (Math.max(above, below) < minimumHeight) {
             // Share the height on crowded screens so the manuscript can still reach either side.
-            int reserved = Math.min(minimumHeight, Math.max(0, (height - gap) / 2));
+            int previewReserve = Math.min(prompt.height(), Math.min(minimumPreviewHeight, (height - gap) / 2));
+            int reserved = Math.min(minimumHeight, Math.max(0, height - gap - previewReserve));
             int promptHeight = Math.min(prompt.height(), Math.max(1, height - reserved - gap));
             int top = dockBelow ? Math.min(prompt.top, Math.max(0, height - reserved - gap - promptHeight))
                     : Math.max(reserved + gap, Math.min(prompt.top, height - promptHeight));
             prompt = new Rect(prompt.left, top, prompt.right, top + promptHeight);
         }
 
+        panelWidth = Math.max(panelWidth, prompt.width());
         int panelLeft = Math.max(0, Math.min(prompt.left, width - panelWidth));
         if (dockBelow) {
             int top = Math.min(height - 1, prompt.bottom + gap);
@@ -57,6 +59,11 @@ record SettingsPlacement(Rect prompt, Rect settings) {
         int bottom = Math.max(1, prompt.top - gap);
         return new SettingsPlacement(prompt, new Rect(panelLeft, Math.max(0, bottom - panelHeight),
                 panelLeft + panelWidth, bottom));
+    }
+
+    private static SettingsPlacement alongside(Rect prompt, Rect settings) {
+        int previewBottom = Math.min(prompt.bottom, prompt.top + settings.height());
+        return new SettingsPlacement(new Rect(prompt.left, prompt.top, prompt.right, previewBottom), settings);
     }
 
     static Rect toLocal(Rect bounds, int width, int height, int turns) {
