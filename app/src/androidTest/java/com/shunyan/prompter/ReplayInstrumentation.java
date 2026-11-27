@@ -108,35 +108,31 @@ public final class ReplayInstrumentation extends Instrumentation {
     private static void verifySettingsPlacement() {
         for (int x = 0; x <= 340; x += 10) {
             Rect prompt = new Rect(x, 24, x + 460, 336);
-            SettingsPlacement placement = SettingsPlacement.fit(prompt, 800, 380, 302, 306, 270, 160, 122, 6);
-            require(placement.prompt().left == x && placement.prompt().width() == prompt.width(),
-                    "Settings constrained horizontal movement");
-            require(!Rect.intersects(placement.prompt(), placement.settings()), "Settings covered the manuscript");
-            require(new Rect(0, 0, 800, 380).contains(placement.settings()), "Settings exceeded the screen bounds");
-            require(placement.settings().height() >= 160, "Settings are too short to use");
-            if (x == 0 || x == 340) require(placement.prompt().top == prompt.top
-                    && placement.prompt().height() == placement.settings().height(),
-                    "Tall landscape preview extended beyond its side panel");
+            SettingsPlacement placement = SettingsPlacement.landscape(prompt, 800, 380, 302, 340, 10);
+            require(placement.prompt().right == placement.settings().left
+                    && placement.prompt().top == placement.settings().top
+                    && placement.prompt().bottom == placement.settings().bottom,
+                    "Landscape preview and settings did not share one side-by-side frame");
+            Rect available = new Rect(10, 10, 790, 370);
+            require(available.contains(placement.prompt()) && available.contains(placement.settings()),
+                    "Landscape settings exceeded the screen bounds");
+            require(prompt.left == x && prompt.width() == 460, "Settings modified the original manuscript bounds");
         }
         Rect portrait = new Rect(18, 24, 388, 720);
         SettingsPlacement placement = SettingsPlacement.portrait(portrait, 410, 780, 320, 386, 152, 10);
-        require(placement.settings().equals(new Rect(10, 416, 400, 770)), "Portrait settings did not fit the bottom area");
-        require(placement.prompt().bottom + 10 == placement.settings().top, "Portrait settings covered the manuscript");
-        require(placement.prompt().left == portrait.left && placement.prompt().width() == portrait.width(),
-                "Portrait settings changed the manuscript's horizontal bounds");
+        require(placement.settings().equals(new Rect(10, 420, 400, 770)), "Portrait settings did not fit the bottom area");
+        require(placement.prompt().bottom == placement.settings().top && placement.prompt().left == placement.settings().left
+                && placement.prompt().right == placement.settings().right,
+                "Portrait preview and settings did not share one stacked frame");
         Rect shortScreenPrompt = new Rect(0, 0, 340, 450);
         SettingsPlacement shortScreen = SettingsPlacement.portrait(shortScreenPrompt, 360, 470, 320, 386, 152, 10);
         require(shortScreen.prompt().height() >= 152 && shortScreen.settings().height() >= 295,
                 "Short portrait screen did not reserve room for both settings and preview");
         require(!Rect.intersects(shortScreen.prompt(), shortScreen.settings()), "Short portrait layout overlapped");
-        Rect centered = new Rect(182, 20, 570, 332);
-        SettingsPlacement landscape = SettingsPlacement.fit(centered, 752, 344, 302, 306, 270, 208, 122, 6);
-        require(landscape.settings().height() >= 208 && landscape.prompt().height() >= 122,
-                "Crowded landscape settings did not leave room for live preview and controls");
-        require(landscape.settings().left == landscape.prompt().left && landscape.settings().width() == centered.width(),
-                "Stacked landscape panels did not align");
-        require(landscape.prompt().left == centered.left && !Rect.intersects(landscape.prompt(), landscape.settings()),
-                "Crowded landscape layout moved the manuscript sideways or covered it");
+        Rect widePrompt = new Rect(0, 0, 480, 285);
+        SettingsPlacement compact = SettingsPlacement.landscape(widePrompt, 520, 320, 302, 340, 10);
+        require(compact.prompt().right == compact.settings().left && compact.settings().right == 510,
+                "Narrow landscape settings did not stay alongside a wide manuscript");
         Rect rotated = SettingsPlacement.toLocal(portrait, 410, 780, 1);
         require(SettingsPlacement.toLocal(rotated, 780, 410, 3).equals(portrait), "Rotated docking lost the manuscript bounds");
     }

@@ -5,65 +5,29 @@ import android.graphics.Rect;
 record SettingsPlacement(Rect prompt, Rect settings) {
     static SettingsPlacement portrait(Rect prompt, int width, int height, int minimumPanelHeight,
                                       int maximumPanelHeight, int minimumPreviewHeight, int margin) {
-        int panelBottom = height - margin;
-        int previewReserve = Math.min(minimumPreviewHeight, (panelBottom - margin) / 2);
-        int desiredHeight = Math.max(minimumPanelHeight, Math.min(maximumPanelHeight, Math.round(panelBottom * .46f)));
-        int panelHeight = Math.min(desiredHeight, panelBottom - previewReserve - margin);
-        int panelTop = panelBottom - panelHeight;
-
-        int previewBottom = panelTop - margin;
-        int previewHeight = Math.min(prompt.height(), previewBottom);
-        int previewTop = Math.min(prompt.top, previewBottom - previewHeight);
-        Rect preview = new Rect(prompt.left, previewTop, prompt.right, previewTop + previewHeight);
-        return new SettingsPlacement(preview, new Rect(margin, panelTop, width - margin, panelBottom));
+        int availableHeight = height - 2 * margin;
+        int previewReserve = Math.min(minimumPreviewHeight, availableHeight / 2);
+        int desiredHeight = Math.max(minimumPanelHeight, Math.min(maximumPanelHeight, Math.round(availableHeight * .46f)));
+        int panelHeight = Math.min(desiredHeight, availableHeight - previewReserve);
+        int previewHeight = Math.min(prompt.height(), availableHeight - panelHeight);
+        int previewTop = Math.max(margin, Math.min(prompt.top, height - margin - panelHeight - previewHeight));
+        int seam = previewTop + previewHeight;
+        return new SettingsPlacement(new Rect(margin, previewTop, width - margin, seam),
+                new Rect(margin, seam, width - margin, seam + panelHeight));
     }
 
-    static SettingsPlacement fit(Rect prompt, int width, int height, int preferredWidth, int preferredHeight,
-                                 int minimumSideWidth, int minimumHeight, int minimumPreviewHeight, int gap) {
-        int panelWidth = Math.min(preferredWidth, width);
-        int panelHeight = Math.min(preferredHeight, height);
-        int right = width - prompt.right - gap;
-        int left = prompt.left - gap;
-        int panelTop = Math.min(prompt.top, height - panelHeight);
-        if (right >= minimumSideWidth && (right >= panelWidth || right >= left)) {
-            int panelLeft = prompt.right + gap;
-            return alongside(prompt, new Rect(panelLeft, panelTop,
-                    panelLeft + Math.min(panelWidth, right), panelTop + panelHeight));
-        }
-        if (left >= minimumSideWidth) {
-            int panelRight = prompt.left - gap;
-            return alongside(prompt, new Rect(panelRight - Math.min(panelWidth, left), panelTop,
-                    panelRight, panelTop + panelHeight));
-        }
-
-        int above = prompt.top - gap;
-        int below = height - prompt.bottom - gap;
-        boolean dockBelow = below >= above;
-        if (Math.max(above, below) < minimumHeight) {
-            // Share the height on crowded screens so the manuscript can still reach either side.
-            int previewReserve = Math.min(prompt.height(), Math.min(minimumPreviewHeight, (height - gap) / 2));
-            int reserved = Math.min(minimumHeight, Math.max(0, height - gap - previewReserve));
-            int promptHeight = Math.min(prompt.height(), Math.max(1, height - reserved - gap));
-            int top = dockBelow ? Math.min(prompt.top, Math.max(0, height - reserved - gap - promptHeight))
-                    : Math.max(reserved + gap, Math.min(prompt.top, height - promptHeight));
-            prompt = new Rect(prompt.left, top, prompt.right, top + promptHeight);
-        }
-
-        panelWidth = Math.max(panelWidth, prompt.width());
-        int panelLeft = Math.max(0, Math.min(prompt.left, width - panelWidth));
-        if (dockBelow) {
-            int top = Math.min(height - 1, prompt.bottom + gap);
-            return new SettingsPlacement(prompt, new Rect(panelLeft, top, panelLeft + panelWidth,
-                    Math.min(height, top + panelHeight)));
-        }
-        int bottom = Math.max(1, prompt.top - gap);
-        return new SettingsPlacement(prompt, new Rect(panelLeft, Math.max(0, bottom - panelHeight),
-                panelLeft + panelWidth, bottom));
-    }
-
-    private static SettingsPlacement alongside(Rect prompt, Rect settings) {
-        int previewBottom = Math.min(prompt.bottom, prompt.top + settings.height());
-        return new SettingsPlacement(new Rect(prompt.left, prompt.top, prompt.right, previewBottom), settings);
+    static SettingsPlacement landscape(Rect prompt, int width, int height, int preferredPanelWidth,
+                                       int preferredPanelHeight, int margin) {
+        int availableWidth = width - 2 * margin;
+        int panelWidth = Math.min(preferredPanelWidth, availableWidth / 2);
+        int previewWidth = Math.min(prompt.width(), availableWidth - panelWidth);
+        int sharedHeight = Math.min(preferredPanelHeight, height - 2 * margin);
+        int left = Math.max(margin, Math.min(prompt.left, width - margin - previewWidth - panelWidth));
+        int top = Math.max(margin, Math.min(prompt.top, height - margin - sharedHeight));
+        int seam = left + previewWidth;
+        int bottom = top + sharedHeight;
+        return new SettingsPlacement(new Rect(left, top, seam, bottom),
+                new Rect(seam, top, seam + panelWidth, bottom));
     }
 
     static Rect toLocal(Rect bounds, int width, int height, int turns) {

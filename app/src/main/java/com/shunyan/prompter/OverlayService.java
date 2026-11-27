@@ -16,6 +16,7 @@ import android.graphics.Insets;
 import android.graphics.PixelFormat;
 import android.graphics.Point;
 import android.graphics.Rect;
+import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.InsetDrawable;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
@@ -64,6 +65,7 @@ public final class OverlayService extends Service {
     private static final String CHANNEL = "floating_prompt";
     private static final int AUTO = -1;
     private static final int PANEL_RADIUS = 26;
+    private static final int PROMPT_INSET = 5;
     private static final int MIN_COLUMNS = 4;
     private static final int AUTO_COLUMNS = 33;
     private static final int WIDTH_GRIP_SIZE = 26;
@@ -73,7 +75,7 @@ public final class OverlayService extends Service {
     private static final int PROGRESS_HEIGHT = 18;
     private static final int FOOTER_HEIGHT = 36;
     private static final int SETTINGS_WIDTH = 302;
-    private static final int SETTINGS_HEIGHT = 306;
+    private static final int SETTINGS_HEIGHT = 340;
     private static final int SETTINGS_TOUCH_HEIGHT = 48;
     private static final int SETTINGS_SURFACE = 0xff20212b;
     private static final int SETTINGS_INK = 0xfff4f2fb;
@@ -155,6 +157,7 @@ public final class OverlayService extends Service {
     private int cursor, voiceGeneration, font, opacity, speed, delay, readingLine, preferredWidth, preferredHeight;
     private int expandedX, expandedY;
     private int settingsPromptX, settingsPromptY;
+    private boolean settingsSideBySide;
     private int backgroundColor, textColor, readColor;
     private float columns;
     private boolean renderedPlayback;
@@ -364,7 +367,7 @@ public final class OverlayService extends Service {
 
     private void bindExpanded() {
         surface.removeAllViews();
-        int inset = dp(5);
+        int inset = dp(PROMPT_INSET);
         titleBar = Ui.row(ui);
         titleBar.setMotionEventSplittingEnabled(false);
         titleBar.setPadding(dp(2), 0, dp(2), 0);
@@ -535,7 +538,9 @@ public final class OverlayService extends Service {
 
     private void layoutScript(int width, int height) {
         if (width <= 0 || height <= 0) return;
-        int side = ScriptLayout.columnInset(width, dp(SCRIPT_GUTTER), columns, scriptText.getPaint().measureText("字"));
+        int manuscriptWidth = manuscriptWidth(width);
+        int side = (width - manuscriptWidth) / 2 + ScriptLayout.columnInset(manuscriptWidth,
+                dp(SCRIPT_GUTTER), columns, scriptText.getPaint().measureText("字"));
         int lineHeight = scriptText.getLineHeight();
         int inset = ScriptLayout.readingInset(readingHeight(height), lineHeight, dp(READING_MARGIN), readingLine);
         int bottom = Math.max(dp(8), height - inset - lineHeight);
@@ -549,6 +554,12 @@ public final class OverlayService extends Service {
         setSideMargins(rightWidthGrip, gripMargin);
         setSideMargins(scriptBackground, Math.max(0, side - dp(10)));
         positionReadingGrip(gripMargin, height, inset + lineHeight / 2);
+    }
+
+    private int manuscriptWidth(int availableWidth) {
+        // The settings card can grow wider without changing the manuscript's usual wrapping.
+        return settingsOpen ? Math.min(availableWidth, Math.max(1, preferredWidth - 2 * dp(PROMPT_INSET)))
+                : availableWidth;
     }
 
     private int readingHeight(int height) {
@@ -705,8 +716,10 @@ public final class OverlayService extends Service {
             dragging = true;
             int inset = startInset + Math.round(left ? delta : -delta);
             int width = scriptScroll.getWidth();
+            int manuscriptWidth = manuscriptWidth(width);
+            inset -= (width - manuscriptWidth) / 2;
             float advance = scriptText.getPaint().measureText("字");
-            float next = ScriptLayout.columnsForInset(width, dp(SCRIPT_GUTTER), MIN_COLUMNS, inset, advance);
+            float next = ScriptLayout.columnsForInset(manuscriptWidth, dp(SCRIPT_GUTTER), MIN_COLUMNS, inset, advance);
             if (columns == next) return;
             columns = next;
             layoutScript(width, scriptScroll.getHeight());
@@ -804,8 +817,8 @@ public final class OverlayService extends Service {
         settingsButton.setText("↩");
         settingsButton.setContentDescription("返回提词");
         pause();
-        applyBackground();
         placeSettingsWindow();
+        applyBackground();
         panel.setTurns(windowTurns);
         windows.updateViewLayout(windowRoot, params);
         windows.addView(panel, settingsParams);
@@ -1498,7 +1511,8 @@ public final class OverlayService extends Service {
 
     private void applyBackground() {
         renderedPlayback = playbackActive();
-        surface.setBackground(collapsed || renderedPlayback || settingsOpen ? null
+        if (settingsOpen) settingsPane.setBackground(settingsFrame(false));
+        else surface.setBackground(collapsed || renderedPlayback ? null
                 : PromptAppearance.fill(ui, backgroundColor, 100, PANEL_RADIUS));
         if (collapsed) return;
 
@@ -1507,12 +1521,11 @@ public final class OverlayService extends Service {
         footer.setVisibility(renderedPlayback || settingsOpen ? View.GONE : View.VISIBLE);
         positionBar.setVisibility(footer.getVisibility());
         int controlInk = panelInk();
-        titleBar.setBackground(settingsOpen ? Ui.shape(ui, SETTINGS_SURFACE, 16, SETTINGS_EDGE)
+        titleBar.setBackground(settingsOpen ? Ui.shape(ui, SETTINGS_CONTROL, 12, Color.TRANSPARENT)
                 : Ui.shape(ui, panelShade(), 16, Color.TRANSPARENT));
         for (int i = 0; i < titleBar.getChildCount(); i++) {
             ((TextView) titleBar.getChildAt(i)).setTextColor(controlInk);
         }
-        if (settingsOpen) settingsPane.setBackground(Ui.shape(ui, SETTINGS_SURFACE, 20, SETTINGS_EDGE));
         status.setTextColor(controlInk);
         for (int i = 0; i < footer.getChildCount(); i++) {
             if (footer.getChildAt(i) instanceof TextView label && label != playButton) label.setTextColor(controlInk);
@@ -1533,9 +1546,29 @@ public final class OverlayService extends Service {
         }
     }
 
+    private void applySettingsFrames() {
+        surface.setBackground(settingsFrame(true));
+        settingsPane.setBackground(settingsFrame(false));
+    }
+
+    private GradientDrawable settingsFrame(boolean preview) {
+        float radius = dp(20);
+        float topLeft = preview ? radius : 0;
+        float topRight = preview != settingsSideBySide ? radius : 0;
+        float bottomRight = preview ? 0 : radius;
+        float bottomLeft = preview == settingsSideBySide ? radius : 0;
+        GradientDrawable frame = preview ? PromptAppearance.fill(ui, backgroundColor, opacity, 0)
+                : Ui.shape(ui, SETTINGS_SURFACE, 0, Color.TRANSPARENT);
+        frame.setStroke(dp(1), SETTINGS_EDGE);
+        frame.setCornerRadii(new float[] {topLeft, topLeft, topRight, topRight,
+                bottomRight, bottomRight, bottomLeft, bottomLeft});
+        return frame;
+    }
+
     private void applyScriptBackground() {
         boolean usePlaybackAppearance = renderedPlayback || settingsOpen;
-        scriptBackground.setBackground(usePlaybackAppearance && opacity > 0
+        if (settingsOpen) surface.setBackground(settingsFrame(true));
+        scriptBackground.setBackground(renderedPlayback && opacity > 0
                 ? PromptAppearance.fill(ui, backgroundColor, opacity, 12) : null);
         scriptText.setOutlined(usePlaybackAppearance && opacity < 100);
     }
@@ -1658,13 +1691,17 @@ public final class OverlayService extends Service {
         int height = sideways ? area.x : area.y;
         Rect prompt = new Rect(left, top, left + promptWidth, top + promptHeight);
         Rect localPrompt = SettingsPlacement.toLocal(prompt, area.x, area.y, windowTurns);
-        SettingsPlacement placement = height > width && width < dp(540)
-                ? SettingsPlacement.portrait(localPrompt, width, height, dp(320), dp(386), dp(152), dp(10))
-                : SettingsPlacement.fit(localPrompt, width, height,
-                        dp(SETTINGS_WIDTH), dp(SETTINGS_HEIGHT), dp(270), dp(208), dp(122), dp(6));
+        boolean sideBySide = width > height;
+        SettingsPlacement placement = sideBySide
+                ? SettingsPlacement.landscape(localPrompt, width, height, dp(SETTINGS_WIDTH), dp(SETTINGS_HEIGHT), dp(10))
+                : SettingsPlacement.portrait(localPrompt, width, height, dp(320), dp(386), dp(152), dp(10));
         int inverse = (-windowTurns) & 3;
         setWindowBounds(params, SettingsPlacement.toLocal(placement.prompt(), width, height, inverse));
         setWindowBounds(settingsParams, SettingsPlacement.toLocal(placement.settings(), width, height, inverse));
+        if (settingsSideBySide != sideBySide) {
+            settingsSideBySide = sideBySide;
+            applySettingsFrames();
+        }
     }
 
     private Point settingsArea() {
