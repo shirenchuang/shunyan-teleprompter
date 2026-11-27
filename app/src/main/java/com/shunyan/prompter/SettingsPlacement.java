@@ -3,6 +3,21 @@ package com.shunyan.prompter;
 import android.graphics.Rect;
 
 record SettingsPlacement(Rect prompt, Rect settings) {
+    static SettingsPlacement portrait(Rect prompt, int width, int height, int minimumPanelHeight,
+                                      int minimumPreviewHeight, int margin) {
+        int panelBottom = height - margin;
+        int previewReserve = Math.min(minimumPreviewHeight, (panelBottom - margin) / 2);
+        int desiredHeight = Math.max(minimumPanelHeight, Math.round(panelBottom * .57f));
+        int panelHeight = Math.min(desiredHeight, panelBottom - previewReserve - margin);
+        int panelTop = panelBottom - panelHeight;
+
+        int previewBottom = panelTop - margin;
+        int previewHeight = Math.min(prompt.height(), previewBottom);
+        int previewTop = Math.min(prompt.top, previewBottom - previewHeight);
+        Rect preview = new Rect(prompt.left, previewTop, prompt.right, previewTop + previewHeight);
+        return new SettingsPlacement(preview, new Rect(margin, panelTop, width - margin, panelBottom));
+    }
+
     static SettingsPlacement fit(Rect prompt, int width, int height, int preferredWidth, int preferredHeight,
                                  int minimumSideWidth, int minimumHeight, int gap) {
         int panelWidth = Math.min(preferredWidth, width);

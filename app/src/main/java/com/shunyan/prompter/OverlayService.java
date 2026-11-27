@@ -74,6 +74,7 @@ public final class OverlayService extends Service {
     private static final int FOOTER_HEIGHT = 36;
     private static final int SETTINGS_WIDTH = 302;
     private static final int SETTINGS_HEIGHT = 306;
+    private static final int SETTINGS_TOUCH_HEIGHT = 48;
 
     private enum ColorTarget {
         BACKGROUND("背景颜色", "backgroundColor"),
@@ -821,7 +822,7 @@ public final class OverlayService extends Service {
         readingLineSlider = null;
         settingsPane.removeAllViews();
         LinearLayout page = Ui.column(ui);
-        page.setPadding(dp(9), 0, dp(9), dp(5));
+        page.setPadding(dp(10), dp(6), dp(10), dp(6));
         LinearLayout tabs = Ui.row(ui);
         tabs.setBackground(Ui.shape(ui, panelShade(), 20, Color.TRANSPARENT));
         addSettingsTab(tabs, "显示设置", false);
@@ -837,8 +838,8 @@ public final class OverlayService extends Service {
         page.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
         TextView done = Ui.primaryAction(ui, "完成", this::toggleSettings);
-        LinearLayout.LayoutParams donePlacement = new LinearLayout.LayoutParams(-1, dp(33));
-        donePlacement.setMargins(dp(43), dp(2), dp(43), 0);
+        LinearLayout.LayoutParams donePlacement = new LinearLayout.LayoutParams(-1, dp(SETTINGS_TOUCH_HEIGHT));
+        donePlacement.topMargin = dp(4);
         page.addView(done, donePlacement);
         settingsPane.addView(page, new FrameLayout.LayoutParams(-1, -1));
         if (scrollY > 0) scroll.post(() -> scroll.scrollTo(0, scrollY));
@@ -854,18 +855,10 @@ public final class OverlayService extends Service {
         TextView tab = selected ? Ui.primaryAction(ui, label, select)
                 : Ui.pillAction(ui, label, Color.TRANSPARENT, panelInk(), select);
         tab.setSelected(selected);
-        tabs.addView(tab, new LinearLayout.LayoutParams(0, dp(35), 1));
+        tabs.addView(tab, new LinearLayout.LayoutParams(0, dp(SETTINGS_TOUCH_HEIGHT), 1));
     }
 
     private void addDisplaySettings(LinearLayout controls, ScrollView scroll) {
-        TextView reset = Ui.pillAction(ui, "恢复黑底白字", panelSelection(), panelInk(), () -> {
-            PromptAppearance.reset(prefs);
-            readAppearance();
-            applyBackground();
-            refreshScriptAppearance();
-            refreshSettings(scroll.getScrollY());
-        });
-        controls.addView(reset, new LinearLayout.LayoutParams(-1, dp(36)));
         addSlider(controls, "文字字号", PromptAppearance.MIN_FONT, PromptAppearance.MAX_FONT,
                 font, value -> value + " sp", value -> {
                     font = value;
@@ -904,6 +897,15 @@ public final class OverlayService extends Service {
         addColorRow(controls, ColorTarget.READ, scroll,
                 new int[] {0, 0xff9b76f2, 0xff326c83, 0xffb65a43},
                 new String[] {"自动淡化", "紫色已读", "青色已读", "暖橙已读"});
+        Ui.space(controls, 8);
+        TextView reset = Ui.pillAction(ui, "恢复黑底白字", panelSelection(), panelInk(), () -> {
+            PromptAppearance.reset(prefs);
+            readAppearance();
+            applyBackground();
+            refreshScriptAppearance();
+            refreshSettings(scroll.getScrollY());
+        });
+        controls.addView(reset, new LinearLayout.LayoutParams(-1, dp(SETTINGS_TOUCH_HEIGHT)));
     }
 
     private void addColorRow(LinearLayout controls, ColorTarget target, ScrollView scroll, int[] colors, String[] names) {
@@ -1167,7 +1169,7 @@ public final class OverlayService extends Service {
         slider.setMax(maximum - minimum);
         slider.setProgress(value - minimum);
         slider.setContentDescription(label);
-        row.addView(slider, new LinearLayout.LayoutParams(0, dp(34), 1));
+        row.addView(slider, new LinearLayout.LayoutParams(0, dp(SETTINGS_TOUCH_HEIGHT), 1));
         TextView amount = Ui.text(ui, format.apply(value), 11, panelInk(), false);
         amount.setGravity(Gravity.CENTER);
         row.addView(amount, new LinearLayout.LayoutParams(dp(49), dp(24)));
@@ -1641,8 +1643,10 @@ public final class OverlayService extends Service {
         int height = sideways ? area.x : area.y;
         Rect prompt = new Rect(left, top, left + promptWidth, top + promptHeight);
         Rect localPrompt = SettingsPlacement.toLocal(prompt, area.x, area.y, windowTurns);
-        SettingsPlacement placement = SettingsPlacement.fit(localPrompt, width, height,
-                dp(SETTINGS_WIDTH), dp(SETTINGS_HEIGHT), dp(270), dp(160), dp(6));
+        SettingsPlacement placement = height > width && width < dp(540)
+                ? SettingsPlacement.portrait(localPrompt, width, height, dp(360), dp(152), dp(8))
+                : SettingsPlacement.fit(localPrompt, width, height,
+                        dp(SETTINGS_WIDTH), dp(SETTINGS_HEIGHT), dp(270), dp(160), dp(6));
         int inverse = (-windowTurns) & 3;
         setWindowBounds(params, SettingsPlacement.toLocal(placement.prompt(), width, height, inverse));
         setWindowBounds(settingsParams, SettingsPlacement.toLocal(placement.settings(), width, height, inverse));

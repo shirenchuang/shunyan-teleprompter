@@ -116,10 +116,17 @@ public final class ReplayInstrumentation extends Instrumentation {
             require(placement.settings().height() >= 160, "Settings are too short to use");
             if (x == 0 || x == 340) require(placement.prompt().equals(prompt), "Docking changed a window that already fits");
         }
-        Rect portrait = new Rect(18, 24, 388, 336);
-        SettingsPlacement placement = SettingsPlacement.fit(portrait, 410, 780, 302, 306, 270, 160, 6);
-        require(placement.prompt().equals(portrait) && placement.settings().top > portrait.bottom,
-                "Settings did not fit below the portrait manuscript");
+        Rect portrait = new Rect(18, 24, 388, 720);
+        SettingsPlacement placement = SettingsPlacement.portrait(portrait, 410, 780, 360, 152, 8);
+        require(placement.settings().equals(new Rect(8, 332, 402, 772)), "Portrait settings did not fill the bottom area");
+        require(placement.prompt().bottom + 8 == placement.settings().top, "Portrait settings covered the manuscript");
+        require(placement.prompt().left == portrait.left && placement.prompt().width() == portrait.width(),
+                "Portrait settings changed the manuscript's horizontal bounds");
+        Rect shortScreenPrompt = new Rect(0, 0, 340, 450);
+        SettingsPlacement shortScreen = SettingsPlacement.portrait(shortScreenPrompt, 360, 470, 360, 152, 8);
+        require(shortScreen.prompt().height() >= 152 && shortScreen.settings().height() >= 300,
+                "Short portrait screen did not reserve room for both settings and preview");
+        require(!Rect.intersects(shortScreen.prompt(), shortScreen.settings()), "Short portrait layout overlapped");
         Rect rotated = SettingsPlacement.toLocal(portrait, 410, 780, 1);
         require(SettingsPlacement.toLocal(rotated, 780, 410, 3).equals(portrait), "Rotated docking lost the manuscript bounds");
     }
